@@ -1,0 +1,28 @@
+# .vaulty.yml — place at the vault root. Every key is optional; the values
+# below are the built-in defaults (Peep's vault layout). See DESIGN.md §4.
+version: 1
+
+# Content dirs, relative to the root. Vault-wide scans and page-name
+# resolution only look here. Missing dirs are skipped.
+dirs: [wiki, me, now, archive]
+
+# Globs never scanned ("dir/**" = everything below dir; else path.Match).
+exclude: []
+
+frontmatter:
+  updated_key: updated          # bumped by `vaulty timeline append --touch`
+
+timeline:
+  heading: "## Timeline"        # exact heading line
+  divider: "---"                # line directly above the heading (blank lines allowed between)
+  entry_gap: auto               # blank lines between entries on append: auto | 0 | 1
+
+lint:
+  hook_paths: ["wiki/**"]       # files `vaulty timeline lint --hook` checks
+  page_checks:
+    paths: ["wiki/**"]          # where PG001/PG002 apply
+    compiled_truth_max_tokens: 3000   # estimate = ceil(bytes/4) above the divider
+    checklist: true             # "- [ ]" / "- [x]" above the divider = work material
+    table_keywords: [unit, units, step, steps, stap, stappen]  # table header cell first word
+    heading_keywords: ["agent log"]  # heading text prefix (case-insensitive)
+  severity: {}                  # per-code override, e.g. {TL006: error, TL008: off}

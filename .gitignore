@@ -1,0 +1,5 @@
+/vaulty
+/dist/
+*.test
+*.out
+.*.vaulty-tmp-*

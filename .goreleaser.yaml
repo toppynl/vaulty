@@ -1,0 +1,28 @@
+version: 2
+project_name: vaulty
+
+builds:
+  - id: vaulty
+    main: ./cmd/vaulty
+    binary: vaulty
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    # Versionless names give stable URLs: releases/latest/download/vaulty_linux_amd64.tar.gz
+    name_template: "vaulty_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: git
+
+release:
+  github:
+    owner: toppynl
+    name: vaulty
