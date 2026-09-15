@@ -232,7 +232,46 @@ lint:
     heading_keywords: ["agent log"]
   severity: {}             # e.g. {TL006: error, TL008: off}
   baseline_path: .vaulty-baseline.json  # ratchet file (§6.1a), relative to the vault root
+  overrides: []            # per-path severity/ratchet exemptions (§6.1a)
 ```
+
+`lint.overrides` is a list of glob-scoped exemptions, layered on top of
+`severity`/the baseline rather than replacing them:
+
+```yaml
+lint:
+  overrides:
+    - paths: ["now/tracking/**"]
+      severity:
+        TL006: warning       # same values as top-level severity: error|warning|off
+      ratchet:
+        TL006: false         # exclude this code from the ratchet entirely, for matching paths
+        TL008: false
+```
+
+- `paths` (required, non-empty): globs, same matching as everywhere else
+  (§4.3) — `MatchAny` against the page's vault-relative path.
+- `severity` works exactly like the top-level `lint.severity` map, but only
+  for pages matching `paths`; later-matching overrides win over earlier ones
+  and over the global map.
+- `ratchet`, keyed by diag code, `false` for a matching path removes that
+  code from the ratchet there: `lint --write-baseline` never records debt
+  for it, `applyRatchet` never promotes it to error there (even though an
+  un-baselined page is normally treated as "new debt = error", §6.1a), and
+  vault-mode `count baseline-stale` never counts it there. The code's
+  default/overridden severity still applies — this only opts a path out of
+  the ratchet, not out of linting. Absent or `true` is the default (ratchet
+  applies normally). Multiple overrides may match one path; for both
+  `severity` and `ratchet`, later entries win per code.
+
+This is generic — not specific to any one path — so a vault can carve out
+its own working layer (e.g. `now/tracking/**`, a `type: work` layer that
+isn't compiled knowledge and churns constantly) without ever feeding that
+churn into the ratchet baseline, while every other page keeps the full
+TL006/TL008 ratchet. Implemented in `internal/config/config.go`
+(`config.Override`) and consumed by `internal/lint/baseline.go`
+(`ratchetDisabled`) and `internal/lint/lint.go` (`applyOverrides`,
+`pageDebtCounts`).
 
 The defaults equal Peep's vault, which therefore needs no config file (ship
 one anyway for clarity). `me-template` has the same top-level layout
@@ -553,6 +592,36 @@ the stderr lines), not something an agent should ever pass on its own
 judgment; agents run `--write-baseline` bare, only a person runs it with
 `--accept-growth`.
 
+**Peep's decision (2026-09-15), hardening the two bypasses above:**
+
+1. *"old" is HEAD, not disk.* Growth is computed against the baseline as
+   **committed at HEAD** (`git show HEAD:<baseline_path>`), never the
+   on-disk file, whenever the vault is a git repo. This closes two ways
+   the shrink-only rule above could otherwise be defeated by a plain
+   `Bash(vaulty:*)`-permitted command: `rm .vaulty-baseline.json &&
+   vaulty timeline lint --write-baseline` (no `old` on disk, so the naive
+   rule treats it as first creation, growth included) and hand-raising a
+   value on disk before running `--write-baseline` (the disk file would
+   then be its own growth reference, so nothing looks like growth). A
+   baseline that exists at HEAD but is missing on disk, or that is higher
+   on disk than at HEAD, is refused outright (`ExitIO`) rather than
+   silently reconciled — both are signs of tampering or an incomplete
+   checkout, not a bootstrap. A real bootstrap (nothing at HEAD, nothing on
+   disk) still writes outright, growth included, exactly as before.
+   Outside git, the on-disk file is used directly (pre-existing behavior).
+   Implemented as `resolveWriteBaselineOld` (`internal/cli/lint.go`) and
+   `lint.ExceedsBaseline` (`internal/lint/baseline.go`).
+2. *`--accept-growth` needs a real terminal.* Because it is a plain flag,
+   `Bash(vaulty:*)` already permits it — nothing stops a script or an
+   agent from typing it. `--write-baseline --accept-growth` now refuses
+   (`ExitUsage`) unless stdin is an interactive terminal (a character
+   device), so it only ever runs from a human actually sitting at a
+   prompt. `internal/cli/tty.go` (`stdinIsTTY`) also honors
+   `VAULTY_STDIN_TTY=1|0` so golden tests can exercise the
+   `--accept-growth` merge logic itself without a real terminal, while
+   still proving the gate refuses by default (a `bytes.Buffer` stdin,
+   which the golden harness always uses, is never a TTY).
+
 A page with zero TL006/TL008 findings and no PG002-over-max finding gets no
 entry at all (adding one would be a no-op: an absent page's implicit `{0,0,0}`
 baseline already tolerates zero findings), which keeps the file limited to
@@ -565,6 +634,27 @@ Vault-mode `lint` counts and reports this: `count baseline-stale N (pages
 below baseline; run --write-baseline to tighten)`, shown whenever a baseline
 file is active (even at `N=0`, mirroring the always-shown PG001/PG002 count
 lines). It is informational only — it never affects severity or exit code.
+
+A baseline entry whose path **no longer exists** in the current `Walk()` —
+deleted, or renamed without updating the baseline — also counts as stale
+(this only applies to a full, unrestricted vault walk: `lint` with no
+path/dir args and no `--changed`, never a partial `lint <dir>`, which would
+otherwise flag every baselined page outside the requested subset as
+"vanished"). Each such path is also listed on its own line, hinting at a
+possible rename, since there is no current page to point an agent at —
+only `--write-baseline` (drops it) or a manual rename fixes it:
+
+```
+count baseline-stale 1 (pages below baseline; run --write-baseline to tighten)
+  wiki/old-name.md: no longer in the vault (deleted, or renamed and not repointed) — possible rename, or run --write-baseline to drop it
+```
+
+**Per-path overrides.** `lint.overrides` (§4.1) can exempt specific paths
+from the ratchet entirely (`ratchet: false` per code) while leaving their
+severity as configured — e.g. `now/tracking/**` (the `type: work` layer,
+which churns constantly and isn't compiled knowledge) keeps TL006/TL008 as
+plain warnings forever, never promoted to error for being un-baselined,
+and never written into the baseline by `--write-baseline`.
 
 **PG001 work material.** Applies only when the path matches
 `lint.page_checks.paths`. Scan the compiled-truth span line by line, skipping

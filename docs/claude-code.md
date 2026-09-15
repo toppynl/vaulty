@@ -133,3 +133,98 @@ Peep's vault matches the built-in defaults, so no config file is required.
 Ship `examples/vaulty.yml` as a documented reference; copy it to the vault
 root as `.vaulty.yml` only if a key needs overriding (e.g.
 `lint.severity: {TL006: error}` once the legacy `| what` backlog is fixed).
+
+To keep a working layer like `now/tracking/**` (a `type: work` layer that
+churns constantly and isn't compiled knowledge) out of the TL006/TL008
+ratchet entirely — plain warnings forever, never promoted to error for
+being un-baselined, never written into `.vaulty-baseline.json` — add:
+
+```yaml
+lint:
+  overrides:
+    - paths: ["now/tracking/**"]
+      ratchet:
+        TL006: false
+        TL008: false
+```
+
+`lint.overrides` is generic (any glob, any code, `severity` too, per
+DESIGN.md §4.1) — this is just the one exemption Peep's vault actually
+needs today.
+
+## 8. Hardening for agent-driven vaults
+
+An agent vault gives its own sessions broad `Bash(vaulty:*)` access, which
+makes two files worth protecting explicitly: `.vaulty-baseline.json` (the
+ratchet — DESIGN.md §6.1a) and `.vaulty.yml` (severity/overrides/paths
+config). vaulty itself closes the `--write-baseline`/`--accept-growth`
+bypasses at the CLI level (DESIGN.md §6.1a, Peep's 2026-09-15 decision);
+the snippets below add defense in depth around it. They are documentation
+only — none of this ships inside a vault from this repo.
+
+**(a) Deny Edit/Write on the ratchet files.** Belt-and-suspenders against a
+skill or agent editing either file directly instead of through the CLI
+(`.claude/settings.json`, `permissions.deny`):
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Edit(.vaulty-baseline.json)",
+      "Write(.vaulty-baseline.json)",
+      "Edit(.vaulty.yml)",
+      "Write(.vaulty.yml)"
+    ]
+  }
+}
+```
+
+**(b) `PreToolUse` hook refusing risky Bash commands.** Blocks a `Bash`
+invocation that names `accept-growth`, or that touches either file via
+`rm`, `mv`, `>` or `tee` — the ways to remove or rewrite them outside the
+CLI's own safeguards:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,sys,re; d=json.load(sys.stdin); cmd=d.get('tool_input',{}).get('command',''); pat=r'accept-growth|(rm|mv|>|tee)[^&|;]*(\\\\.vaulty-baseline\\\\.json|\\\\.vaulty\\\\.yml)'; sys.exit(2) if re.search(pat, cmd) else sys.exit(0)\""
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Exit 2 from a `PreToolUse` hook blocks the tool call and feeds the message
+back to the agent (same convention as the `--hook` lint mode, §3).
+
+**(c) Optional pre-commit check: baseline never rises versus HEAD.** Since
+`resolveWriteBaselineOld` already diffs against HEAD (DESIGN.md §6.1a),
+this is redundant with the CLI's own refusal — but a cheap, independent
+second line of defense for a commit that somehow bypassed it (e.g. a
+hand-edited commit, not `--write-baseline` at all):
+
+```bash
+#!/bin/sh
+# .git/hooks/pre-commit (or wire into an existing pre-commit runner)
+git diff --cached --name-only | grep -qx '.vaulty-baseline.json' || exit 0
+git show HEAD:.vaulty-baseline.json > /tmp/vaulty-baseline-head.json 2>/dev/null || exit 0
+python3 -c "
+import json, sys
+old = json.load(open('/tmp/vaulty-baseline-head.json'))['pages']
+new = json.load(open('.vaulty-baseline.json'))['pages']
+for path, entry in new.items():
+    base = old.get(path, {'tl006': 0, 'tl008': 0, 'pg002_tokens': 0})
+    for code in ('tl006', 'tl008', 'pg002_tokens'):
+        if entry.get(code, 0) > base.get(code, 0):
+            print(f'{path} {code} would rise {base.get(code, 0)} -> {entry.get(code, 0)}')
+            sys.exit(1)
+"
+```
