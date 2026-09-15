@@ -6,9 +6,10 @@ the `## Timeline` convention: `vaulty timeline lint|read|append`. The command
 tree leaves room for `index`, a general `lint`, `migrate`, `dream` and similar.
 
 The reference oracle is `scripts/lib/timeline.mjs` plus `scripts/timeline-asc.mjs`
-in the me vault. It was verified zero-loss on all 719 vault files. Go matches
-its parse and sort behaviour exactly (checked by the parity harness in §10.3),
-and fixes its API gaps:
+in the me vault. It was verified zero-loss on all 719 vault files. Go's parse
+and sort semantics are ported from it line-for-line, checked against the real
+vault by a round-trip identity check (§10.3) rather than a Node-diff, and it
+fixes its API gaps:
 
 - parse never stops;
 - it reports line numbers, raw date text and diagnostics;
@@ -87,7 +88,7 @@ internal/timeline/        dates, Parse, sort/serialize (oracle port), Append
 internal/lint/            TL*/PG* checks, modes, counts
 internal/safety/          pre-write verification shared by every writer
 internal/diag/            Diag type + codes
-scripts/parity/           Node oracle dumper + run.sh (step 2)
+scripts/parity/           round-trip test + optional Node oracle dumper (step 2)
 scripts/install.sh        installer (step 5)
 testdata/golden/          CLI golden cases (synthetic content only, §10.2)
 examples/vaulty.yml       documented defaults
@@ -857,50 +858,49 @@ Minimum cases:
     content after, placeholder preamble, bad format, partial date, future
     date (warning only, not a refusal); `--dry-run`.
 
-### 10.3 Node parity harness (`scripts/parity/`)
+### 10.3 Vault round-trip check (`scripts/parity/roundtrip_test.go`, live proof)
 
-- **`oracle-dump.mjs <root>`** imports the oracle from `$ORACLE_LIB`
-  (default `/var/www/personal/me/scripts/lib/timeline.mjs`). It walks
-  `wiki me now archive` exactly as `timeline-asc.mjs` does and, for every
-  file with at least one block, prints one JSON line.
-- **`vaulty timeline dump --vault <root>`** (hidden) prints the same schema
-  from Go. Files come out sorted by path, and keys in the order below.
+Peep's scope call (2026-09-15): the done-criterion for parser correctness
+against the real vault is a **round-trip identity check**, not a Node-oracle
+diff. Over a copy of the vault at HEAD, for every `.md` file under
+`wiki me now archive`:
 
-```json
-{"path":"wiki/a.md","blocks":[
-  {"heading_line":42,"ok":true,"order":"ascending","leading_blanks":1,"trailing_blanks":1,
-   "gaps":[0,0],"entries":[{"key":"2026-08-00","lines":["- **2026-08** | ..."]}],
-   "sorted_body":"<serializeBlock(sortAscending(...))>"}]}
+1. `doc.Parse` + `timeline.Parse` the file with the default config (the real
+   vault ships no `.vaulty.yml`).
+2. For every `Sortable` block, reconstruct the body from its **original**
+   (unsorted) `Entries`, `Gaps`, `LeadingBlanks`, `TrailingBlanks` via
+   `SerializeBody`, and splice it back in place of `src[Body]`.
+3. The reconstructed file must be byte-identical to the original. Any
+   mismatch is a parser bug.
+4. Non-`Sortable` blocks (currently one, the `juli/augustus 2026` file) are
+   skipped from the identity check and counted separately — they're not
+   round-trippable by construction.
+
+This is a Go test, `TestVaultRoundTrip` in `internal/timeline`, gated on the
+`VAULTY_PARITY_ROOT` env var (skipped when unset, so `go test ./...` stays
+green without the private vault). Run it against a scratch copy, never the
+live vault:
+
+```
+git -C /var/www/personal/me worktree add /path/to/scratch HEAD   # read-only copy
+VAULTY_PARITY_ROOT=/path/to/scratch go test ./internal/timeline/... -run TestVaultRoundTrip -v
 ```
 
-- For `ok:false` blocks, only `heading_line` and `ok` appear.
-- In Node, `heading_line` is the number of `\n` in `text.slice(0,
-  headingStart)`, plus 1. Byte offsets are not compared, because JS
-  indices are UTF-16.
-- `sorted_body` is what makes sorting parity real.
+It reports files scanned, blocks checked, blocks skipped (non-sortable) and
+mismatches (must be 0).
 
-**`run.sh`** takes `VAULT_SRC` (default `/var/www/personal/me`) and `REFS`
-(default `"HEAD 9e7bffa^"`). `9e7bffa^` is the vault before the ASC
-migration, with 83 descending and 13 mixed blocks; the current HEAD is all
-ascending, so without it the sort code would go untested. For each ref:
+Second live proof, on the same scratch copy: `vaulty timeline append` on a
+handful of representative pages (one plain, one with month-only entries, one
+with gap 1, one with no Timeline yet), each followed by `vaulty timeline
+lint`, must show no lost content and the entry landing in the right
+(ascending) position. This is a manual/scripted smoke test, not a `go test`
+target (§14 step 4's done-when).
 
-1. Extract the content dirs:
-   `git -C $VAULT_SRC archive $REF wiki me now archive | tar -x -C $PARITY_TMP/<ref>`.
-   `PARITY_TMP` defaults to `/var/www/tmp/vaulty-parity`. Never use `/tmp`.
-2. Dump both sides.
-3. Normalize with `jq -cS .` and `diff` the results.
-4. Print file and block counts.
-5. `rm -rf` the extract.
-
-The script also runs both dumpers over `testdata/golden/*/vault` to cover
-the `ok:false` paths. It exits non-zero on any diff.
-
-Parity is a local gate, not CI: the vault is private. It must be green
-before step 3 starts, and again at the end.
-
-After U10 ships and parity has been green once, the Node lib and
-`timeline-asc.mjs` can be deleted from the vault. That is the
-orchestrator's call, not part of this repo.
+**Dropped from scope:** the two-ref Node-diff (`HEAD` vs `9e7bffa^`) and any
+`make parity` target. If a Node-oracle dumper is useful for debugging a
+parser disagreement, keep `scripts/parity/oracle-dump.mjs` and
+`vaulty timeline dump` (hidden) as an optional, uncommitted-output local
+script — never a done-criterion, never run in CI (the vault is private).
 
 ---
 
@@ -1034,12 +1034,14 @@ creating the GitHub remote, and adding commands beyond §3.1.
    - Write the unit tests from §10.1 for config, vault and doc.
 2. **Parser and parity (about 40k).**
    - Build `timeline.Parse` (§5.2–5.4), `AllDiags`, `SortAscending` and
-     `SerializeBody` (§5.5–5.6), and the hidden `dump` command.
-   - Write `scripts/parity/{oracle-dump.mjs,date-keys.mjs,run.sh}` and the
-     date-key test.
-   - Done when: `run.sh` shows zero diff on `HEAD` and `9e7bffa^`, and the
-     round-trip invariant holds on every block. Report the file, block and
-     order counts.
+     `SerializeBody` (§5.5–5.6).
+   - Write the date-key test (`internal/timeline/testdata/date-keys.json`,
+     generated once by `scripts/parity/date-keys.mjs` from the oracle).
+   - Write `scripts/parity/roundtrip_test.go`'s `TestVaultRoundTrip` (§10.3).
+     The hidden `dump` command and `scripts/parity/oracle-dump.mjs`/`run.sh`
+     are optional, kept for debugging only, not a done-criterion.
+   - Done when: `TestVaultRoundTrip` is zero-mismatch on a scratch copy of
+     the vault at HEAD. Report the file, block and mismatch/skip counts.
 3. **Lint (about 30k).**
    - Build the §6 checks, all modes (`--changed`, `--hook`), `--warnings`,
      `--strict`, severity overrides and both output formats.
@@ -1060,10 +1062,10 @@ creating the GitHub remote, and adding commands beyond §3.1.
    - Write `scripts/install.sh`, `docs/claude-code.md` (the §12 snippets
      plus the §11 bootstrap block) and a short `README.md`.
 6. **Hardening (about 5k).**
-   - Run the full test suite and a parity rerun.
+   - Run the full test suite and a `TestVaultRoundTrip` rerun.
    - Check that `vaulty --version` shows ldflags output.
    - Grep that no Go file hard-codes the name outside `internal/name`.
-   - Report the parity counts, the lint numbers and any deviations.
+   - Report the round-trip counts, the lint numbers and any deviations.
 
 ---
 

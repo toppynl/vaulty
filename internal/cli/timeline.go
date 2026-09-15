@@ -1,7 +1,16 @@
 package cli
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
+
 	"github.com/spf13/cobra"
+
+	"github.com/toppynl/vaulty/internal/doc"
+	"github.com/toppynl/vaulty/internal/timeline"
+	"github.com/toppynl/vaulty/internal/vault"
 )
 
 func (a *app) newTimelineCmd() *cobra.Command {
@@ -113,9 +122,74 @@ func (a *app) newTimelineDumpCmd() *cobra.Command {
 		Short:  "Emit parser state as JSON lines for the Node parity harness",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO(step 2): DESIGN.md §10.3 — schema must match scripts/parity/oracle-dump.mjs.
-			return &ExitError{Code: ExitUsage, Err: ErrNotImplemented}
+			return a.runTimelineDump(args)
 		},
 	}
 	return cmd
+}
+
+func (a *app) runTimelineDump(args []string) error {
+	v, err := a.openVault()
+	if err != nil {
+		return err
+	}
+	files, err := dumpFiles(v, args)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
+	}
+	enc := json.NewEncoder(a.stdout)
+	for _, rel := range files {
+		full := filepath.Join(v.Root, filepath.FromSlash(rel))
+		src, err := os.ReadFile(full)
+		if err != nil {
+			return &ExitError{Code: ExitIO, Err: err}
+		}
+		d := doc.Parse(rel, src)
+		dump := timeline.DumpFile(rel, d, v.Config.Timeline)
+		if dump == nil {
+			continue
+		}
+		if err := enc.Encode(dump); err != nil {
+			return &ExitError{Code: ExitIO, Err: err}
+		}
+	}
+	return nil
+}
+
+// dumpFiles resolves dump's [paths...] to a sorted list of vault-relative
+// .md files: default dirs when no args, else each arg (file or directory).
+func dumpFiles(v *vault.Vault, args []string) ([]string, error) {
+	if len(args) == 0 {
+		return v.Walk()
+	}
+	var out []string
+	for _, a := range args {
+		abs, err := filepath.Abs(a)
+		if err != nil {
+			return nil, err
+		}
+		st, err := os.Stat(abs)
+		if err != nil {
+			return nil, err
+		}
+		if st.IsDir() {
+			rel, err := filepath.Rel(v.Root, abs)
+			if err != nil {
+				return nil, err
+			}
+			files, err := v.Walk(filepath.ToSlash(rel))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, files...)
+			continue
+		}
+		rel, err := filepath.Rel(v.Root, abs)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filepath.ToSlash(rel))
+	}
+	sort.Strings(out)
+	return out, nil
 }
