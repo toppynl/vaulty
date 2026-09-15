@@ -167,25 +167,69 @@ func CheckShardDirs(v *vault.Vault, scope []string) ([]diag.Diag, error) {
 		}
 		hd := doc.Parse(h.HubFile, src)
 		linked := wikilinkTargets(string(src))
+
+		// When scope reached this hub only via a child (the hub file
+		// itself is out of scope — a single --hook/--changed run on one
+		// child), the SH003 message would otherwise read as if the hub
+		// were flagged unprompted; name the child that pulled it into
+		// scope.
+		via := ""
+		if !inScope[h.HubFile] {
+			for _, c := range h.Children {
+				if inScope[c] {
+					via = c
+					break
+				}
+			}
+		}
+
 		for _, c := range h.Children {
 			name := strings.TrimSuffix(path.Base(c), ".md")
-			if linked[name] {
+			if linked[normalizeWikilinkTarget(name)] {
 				continue
+			}
+			msg := fmt.Sprintf("hub does not link its child [[%s]] (%s)", name, c)
+			if via != "" {
+				msg += fmt.Sprintf(" (via child %s)", via)
 			}
 			diags = append(diags, diag.Diag{
 				Code: diag.SH003HubMissingChild, Severity: diag.Error,
 				Path: h.HubFile, Line: hd.LineOf(hd.Body.Start),
-				Message: fmt.Sprintf("hub does not link its child [[%s]] (%s)", name, c),
+				Message: msg,
 			})
 		}
 	}
 	return diags, nil
 }
 
+// normalizeWikilinkTarget collapses a raw `[[...]]` link target — as
+// captured by reWikilinkTarget, i.e. everything up to `]`, `|` or `#` — to
+// the bare, lowercase page name SH002/SH003 compare by. This one helper is
+// the only place that identity is decided, so the hub→child direction
+// (SH003, via wikilinkTargets) and the child→hub direction (SH002, via
+// relatedListsHub) can never disagree on what counts as "the same link".
+// It handles:
+//   - an escaped pipe inside a markdown table cell (`[[x\|alias]]`, used so
+//     the pipe doesn't end the table cell): the regex still stops at the
+//     unescaped `|` for `[[x|alias]]`, but for the escaped form it leaves a
+//     trailing backslash on the capture (`x\`), which this strips;
+//   - a path-form link (`[[type/hub/x]]`): only the final path segment is
+//     the page identity;
+//   - an explicit `.md` suffix (`[[x.md]]`);
+//   - casing (`[[X]]` vs `x`).
+func normalizeWikilinkTarget(raw string) string {
+	t := strings.TrimSpace(raw)
+	t = strings.TrimSuffix(t, `\`)
+	t = strings.TrimSpace(t)
+	t = path.Base(t)
+	t = strings.TrimSuffix(t, ".md")
+	return strings.ToLower(t)
+}
+
 func wikilinkTargets(text string) map[string]bool {
 	out := map[string]bool{}
 	for _, m := range reWikilinkTarget.FindAllStringSubmatch(text, -1) {
-		out[strings.TrimSpace(m[1])] = true
+		out[normalizeWikilinkTarget(m[1])] = true
 	}
 	return out
 }
@@ -196,7 +240,7 @@ func wikilinkTargets(text string) map[string]bool {
 // in both files and vault mode. A page counts as a child when its own
 // directory is a hub-directory candidate (DESIGN.md §16); a plain,
 // unsharded page under e.g. wiki/systems/ is never a child.
-func checkShardChild(p *timeline.Page, cfg *config.Config) []diag.Diag {
+func checkShardChild(p *timeline.Page, cfg *config.Config, baseline *Baseline) []diag.Diag {
 	dir := path.Dir(p.Doc.Path)
 	if dir == "." || !IsHubDirCandidate(cfg.Lint.Shard, dir) {
 		return nil
@@ -219,8 +263,15 @@ func checkShardChild(p *timeline.Page, cfg *config.Config) []diag.Diag {
 
 	text := string(p.Doc.Src[p.CompiledTruth.Start:p.CompiledTruth.End])
 	if tokens := EstimateTokens(len(text)); tokens > cfg.Lint.PageChecks.CompiledTruthMaxTokens {
+		// SH004 measures exactly what PG002 measures (compiled-truth
+		// tokens) on the same page, so it follows PG002's existing
+		// baseline entry rather than keeping its own: a child already
+		// accepted as oversized via --write-baseline shouldn't flip back
+		// to an error (and a --hook exit 2) just because SH004 restates
+		// the same number PG002 already downgraded to a warning
+		// (DESIGN.md §16.3).
 		diags = append(diags, diag.Diag{
-			Code: diag.SH004ChildOversized, Severity: diag.Error,
+			Code: diag.SH004ChildOversized, Severity: pg002Severity(p.Doc.Path, tokens, baseline),
 			Line:    p.Doc.LineOf(p.CompiledTruth.Start),
 			Message: fmt.Sprintf("child compiled truth ~%d tokens > %d — split further, or move history/work out", tokens, cfg.Lint.PageChecks.CompiledTruthMaxTokens),
 		})
@@ -250,7 +301,7 @@ func relatedField(d *doc.Doc) (text string, line int) {
 		if strings.TrimRight(raw, " \t\r") == "---" {
 			return "", 0 // closing delimiter reached, key not found
 		}
-		if !strings.HasPrefix(raw, "related:") {
+		if !isRelatedKeyLine(raw) {
 			continue
 		}
 		var b strings.Builder
@@ -261,7 +312,7 @@ func relatedField(d *doc.Doc) (text string, line int) {
 			if strings.TrimRight(l, " \t\r") == "---" {
 				break
 			}
-			if l == "" || strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t") {
+			if isRelatedContinuationLine(l) {
 				b.WriteString(l)
 				b.WriteByte('\n')
 				continue
@@ -273,12 +324,39 @@ func relatedField(d *doc.Doc) (text string, line int) {
 	return "", 0
 }
 
+// isRelatedKeyLine reports whether raw is the frontmatter `related:` key
+// line itself — not `related_x:` or any other key that merely starts with
+// the same letters. Guards against strings.HasPrefix over-matching by
+// requiring the key to end exactly at "related:", with nothing but
+// whitespace (an inline value) or end-of-line (block form) after it.
+func isRelatedKeyLine(raw string) bool {
+	const key = "related:"
+	if !strings.HasPrefix(raw, key) {
+		return false
+	}
+	rest := raw[len(key):]
+	return rest == "" || strings.HasPrefix(rest, " ") || strings.HasPrefix(rest, "\t") || strings.TrimRight(rest, "\r") == ""
+}
+
+// isRelatedContinuationLine reports whether l extends the `related:` block
+// started on the key line: blank, indented (either form — a mapping-style
+// nested value), or a bare YAML list item at column 0 (`- [[x]]`), which is
+// valid YAML at the same indentation as the key itself and would otherwise
+// stop relatedField's scan on the very first entry.
+func isRelatedContinuationLine(l string) bool {
+	if l == "" || strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t") {
+		return true
+	}
+	return l == "-" || strings.HasPrefix(l, "- ")
+}
+
 func relatedListsHub(relatedText, hubName string) bool {
 	if relatedText == "" {
 		return false
 	}
+	target := normalizeWikilinkTarget(hubName)
 	for _, m := range reWikilinkTarget.FindAllStringSubmatch(relatedText, -1) {
-		if strings.TrimSpace(m[1]) == hubName {
+		if normalizeWikilinkTarget(m[1]) == target {
 			return true
 		}
 	}

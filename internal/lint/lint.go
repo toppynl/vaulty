@@ -76,7 +76,7 @@ func CheckPage(p *timeline.Page, v *vault.Vault, pageChecks bool, baseline *Base
 		}
 		diags = append(diags, pg...)
 	}
-	sh := checkShardChild(p, v.Config)
+	sh := checkShardChild(p, v.Config, baseline)
 	for i := range sh {
 		sh[i].Path = p.Doc.Path
 	}
