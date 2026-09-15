@@ -127,8 +127,12 @@ binary is built with CGO disabled.
 vaulty [--vault DIR] [--json]
 ├── timeline
 │   ├── lint   [paths...] [--hook] [--changed[=REF]] [--warnings] [--strict] [--write-baseline]
-│   ├── read   <page> [--timeline] [--since DATE] [--last N] [--frontmatter]
+│   ├── read   <page> [--timeline] [--since DATE] [--last N] [--frontmatter] [--headings] [--section HEADING] [--max-bytes N]
 │   └── append <page> "<entry>" [--touch] [--dry-run]
+├── log
+│   ├── append <op> <title> [--body TEXT] [--date YYYY-MM-DD]
+│   ├── last   [--n N] [--op OP] [--since DATE]
+│   └── lint
 ├── config print                     (step 1: effective config + root + config path)
 └── version / --version
 ```
@@ -142,7 +146,6 @@ take their names for anything else:
 | `lint` | Umbrella: runs `timeline lint` plus dead links, orphans, frontmatter schema, hot.md date/size checks |
 | `migrate timeline-asc` | Port of `timeline-asc.mjs` on top of `SortAscending` + `safety.Verify{PreserveBlankCount}` |
 | `dream extract` | Dream-routine extraction |
-| `read --section` | Read one section of a page |
 | `search`, `backlinks` | Search and backlink queries |
 
 `timeline lint` hosts the two page checks (PG001, PG002) because both are
@@ -877,6 +880,98 @@ on them.
  "diags":[...]}
 ```
 
+### 7.1 `--headings`
+
+Lists every ATX heading (`#`..`######`) found in the page's body
+(frontmatter excluded), in file order, skipping anything inside a fenced
+code block (`` ``` `` or `~~~`). It is its own mode — independent of the
+default/Timeline/section modes above and of `--max-bytes` — for a reader
+agent to scan a large page's structure before deciding what to read next
+(`internal/doc.Headings`).
+
+Each heading's reported size is its whole section: from the heading line
+through the byte before the next heading of level ≤ its own, or EOF —
+nested sub-headings count towards their parent's size, matching `--section`
+below exactly.
+
+Human output, one line per heading, tab-separated, no header row (kept
+terse like Timeline mode): `<line>\t<### text>\t<lines>\t<bytes>`, e.g.:
+
+```
+9	## Background	9	102
+14	### Background Detail	4	44
+```
+
+`--json`: `{"path":"...", "headings":[{"line":9,"level":2,"text":"Background","lines":9,"bytes":102}], "diags":[...]}`.
+
+A page with no headings prints nothing (human) / an empty `headings` array
+(json), exit 0 — same best-effort contract as the rest of `read`.
+
+### 7.2 `--section <heading text>`
+
+Prints one section: from the matching heading's line through the byte
+before the next heading of level ≤ its own, or EOF (i.e. exactly the span
+`--headings` reports for it), with leading/trailing blank lines trimmed —
+nested sub-headings are included, since they're part of that section.
+
+The query is matched against heading text with any leading `#`s and
+surrounding whitespace the caller included stripped first, so `--section
+Background`, `--section "## Background"` and `--section "  Background  "`
+all match the same heading. Matching is exact and case-sensitive on the
+remaining text; the first match in file order wins when a vault has two
+identically-named headings (rare — same convention as page names being
+unique by convention, §3.3). No match: exit 2, `no such section: "<query>"`.
+
+`--headings` and `--section` are mutually exclusive (exit 2 if both are
+given). `--section` combines with `--frontmatter` (frontmatter still prints
+first, in full) and with `--max-bytes` (§7.3); it does not combine with
+`--timeline`/`--since`/`--last` — those are ignored once `--section` is
+set, since a section is not the Timeline block.
+
+`--json`: adds `"section":{"line":9,"heading":"Background","text":"..."}`
+in place of `compiled_truth`/`entries`.
+
+### 7.3 `--max-bytes N`
+
+Caps the byte size of the one piece of content `read` would otherwise print
+(the compiled truth in default mode, the joined Timeline entries in
+Timeline mode, or the section text in `--section` mode) at N bytes,
+counting from the start and backing off to the nearest UTF-8 rune boundary
+so a multi-byte character is never split. `N` must be a positive integer;
+`--max-bytes 0` (or any N ≤ 0) is a usage error (exit 2) — a caller that
+wants "everything" simply omits the flag, rather than every read command
+needing to special-case an explicit zero.
+
+Human mode: the (possibly truncated) content prints as usual, followed by
+one marker line reporting exactly how much was cut:
+
+```
+[... 842 bytes / 21 lines truncated ...]
+```
+
+The marker itself is not counted against the N-byte budget — it is metadata
+about the cut, not more of the capped content, the same way `wc -l`'s own
+output isn't part of the file it measures. This is the single place the
+omission is reported; there is no separate stderr notice, keeping `read`'s
+"never prints diagnostics in human mode" contract (above) intact while
+still surfacing exactly what a script needs (grep the marker, or parse the
+byte/line counts out of it).
+
+`--json`: when truncation actually happened, adds a sibling `"truncated":
+{"bytes":842,"lines":21}` field next to whichever content field was capped
+(`compiled_truth` or `section.text`); the field is entirely absent when
+`--max-bytes` was not given, or was given but nothing needed cutting.
+**`--max-bytes` has no effect on `--json --timeline` output** — Timeline
+entries are already a structured, ordered list bounded by `--since`/
+`--last`; cutting into that array mid-entry would corrupt its structure for
+no benefit a JSON consumer doesn't already get by slicing the array itself.
+(Human-mode `--timeline --max-bytes` is unaffected by this: there the
+output is one text stream like any other, and gets capped the same way.)
+
+`--section X --max-bytes N` cuts inside the section's own text — this is
+the combination the agent workflow in the problem statement needs: pick a
+section with `--headings`, then read it in size-bounded chunks.
+
 ---
 
 ## 8. `vaulty timeline append <page> "<entry>"`
@@ -1557,3 +1652,126 @@ list item as part of the block, not just indented or blank continuation
 lines — `related:` followed by an unindented list is valid YAML — and
 matches the `related:` key itself exactly (not `related_extra:` or any
 other key sharing the prefix).
+
+---
+
+## 17. `vaulty log append|last|lint`
+
+A second, separate append-only convention from Timeline blocks (§1): one
+file per vault (`log.md` by default, `log.path` in `.vaulty.yml`, resolved
+relative to the root — `internal/config.Log`), holding a flat operation
+log rather than per-page history. Header format, fixed:
+
+```
+## [YYYY-MM-DD] <op> | <title>
+<body>            (optional, free-form, any number of lines)
+```
+
+Newest entry at the bottom (append-only, matching the real vault's
+`log.md`). Implemented in `internal/vaultlog` (parse/format/validate,
+package-level, no vault dependency) plus `internal/cli/log.go` +
+`internal/cli/logrun.go` (command tree + CLI glue, mirroring the
+`timeline` command's file split).
+
+### 17.1 Parsing (`vaultlog.Parse`)
+
+Never stops and never errors, mirroring `timeline.Parse`'s "every problem
+becomes a diagnostic, no line is dropped" stance (§5, chosen here because
+the real vault's `log.md` has ~1300 headings written by hand/other tooling
+over time, not exclusively by this command — a handful can be malformed
+and `log last`/`log lint` must survive that, not crash).
+
+A line is a candidate heading iff it starts with `"## "`. It parses as a
+well-formed `Entry` iff, in order: it has a `[...]` right after `"## "`;
+the bracketed text is a valid `time.Parse("2006-01-02", ...)` date; a
+single space follows `]`; the remainder contains the literal separator
+`" | "`; the text before that separator (`op`), trimmed, is non-empty; the
+text after it (`title`), trimmed, is non-empty. Anything else on a
+candidate line — missing brackets, an invalid calendar date, no `" | "`
+separator, an empty op or title — makes it `Malformed` (`{Line, Text,
+Reason}`) instead, and parsing continues with the next candidate line.
+
+A bare `|` inside `op` with no surrounding spaces (seen in the wild:
+`decision|update`) does **not** trigger the separator search early — only
+the exact three-byte sequence `" | "` does — so that shape parses as a
+normal, well-formed entry with `op = "decision|update"`.
+
+A well-formed entry's `Body` is every line between its heading and the
+next candidate heading (well-formed or malformed) or EOF, joined and
+trimmed of leading/trailing blank lines — so the real vault's often-blank-
+line-then-bullets bodies parse as one `Body` string regardless of how many
+lines or what markdown they use; only `log append` itself is limited to a
+single body line (§17.2).
+
+### 17.2 `log append <op> <title> [--body TEXT] [--date YYYY-MM-DD]`
+
+`--date` defaults to today (`$VAULTY_TODAY` or the local date, like
+`--touch`, §8.5); given explicitly it must be a full `YYYY-MM-DD` date or
+the command exits 2 (usage — same class of error as `timeline read
+--since` with a bad date).
+
+`op`, `title` and `--body` (when given) are each validated by
+`vaultlog.ValidateField` before anything is written — **rejected**, never
+silently stripped, since silently mutating what an agent asked to write is
+worse than a clear refusal it can retry:
+
+- non-empty after trimming;
+- no `\n` or `\r` anywhere — a newline inside any of these three fields
+  would corrupt the one-line heading format (or, for `--body`, break the
+  "single body line" contract §17 promises for entries this command
+  writes) on the very next parse;
+- `op` additionally must not contain the literal `" | "` — that exact
+  sequence is the heading's real separator, so allowing it in `op` would
+  make the written entry unparseable as the op the caller intended (a bare
+  `|` without surrounding spaces, as in §17.1's `decision|update` example,
+  is still allowed).
+
+A validation failure exits 3 (refused — same code timeline `append` uses
+for `ValidateEntry` failures, §8.1) and writes nothing.
+
+On success: the file (created, with parent directories, if it doesn't
+exist yet) gets the new entry appended via `vaultlog.Append`, separated
+from any existing content by exactly one blank line (the tool's own
+convention going forward; it does not rewrite the real vault's existing
+mix of blank/no-blank separators between entries). Human output: `appended
+<path>:<line>\n` to stdout. `--json`: `{"path":...,"line":...,"date":...,
+"op":...,"title":...}`.
+
+### 17.3 `log last [--n N] [--op OP] [--since DATE]`
+
+Best-effort and scriptable, like `timeline read`: parses the whole file,
+prints one stderr warning per malformed heading found (`<path>:<line>:
+malformed log entry, skipped: <reason>`) and otherwise ignores them — never
+a fatal error. A missing log file behaves as zero entries (not an error);
+an unreadable one (permission, or a directory at that path) is exit 4 (I/O).
+
+Filters apply before the `--n` cutoff, in file order: `--op OP` keeps exact
+(case-sensitive) op matches; `--since DATE` (same `YYYY-MM-DD`/`YYYY-MM`
+parsing as `timeline read --since`) keeps `Date >= since` by plain ISO
+string comparison (valid since the format is fixed-width `YYYY-MM-DD`).
+`--n` (default 10, like the CLI table's example) then keeps the last N of
+what's left — `0` means all, matching `timeline read --last`'s convention;
+`N < 0` is a usage error (exit 2).
+
+Human output reprints each kept entry exactly as `vaultlog.Format` would
+write it (heading + body), blank-line-separated — log entries are read as
+a short journal, not folded into one token-lean stream the way Timeline
+entries are (§7), so the extra readability is worth the bytes here.
+`--json`: `{"path":...,"entries":[{"line":...,"date":...,"op":...,
+"title":...,"body":...}],"malformed_count":N}` — a count, not the
+malformed entries themselves (already on stderr; `log lint` is the command
+for their detail, §17.4).
+
+### 17.4 `log lint`
+
+Reports every malformed heading in the log file, human mode one per stdout
+line (`<path>:<line>: malformed: <reason>: <text>`, mirroring `timeline
+lint`'s `path:line: CODE severity: message` shape, §6.3) or `--json`
+(`{"path":...,"malformed":[{"line":...,"reason":...,"text":...}]}`).
+Exit 1 if any malformed heading was found (`ExitFindings`, same convention
+as `timeline lint`), exit 0 otherwise — including when the file doesn't
+exist yet. A separate subcommand rather than folding this into `log last`
+because `last`'s job is best-effort reading (never fail the read over data
+quality) while `lint`'s job is exactly the opposite: surface every
+malformed heading as the primary result, for a periodic vault-health pass
+(alongside `timeline lint`) rather than every `log last` call.
