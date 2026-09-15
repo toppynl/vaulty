@@ -30,6 +30,9 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 		if len(args) > 0 || o.changed != "" {
 			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--write-baseline takes no paths/--changed: it always covers the whole vault")}
 		}
+		if o.acceptGrowth && !stdinIsTTY(a.stdin) {
+			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--accept-growth requires an interactive terminal on stdin: it is a human decision, never run it from a script or agent")}
+		}
 		return a.runWriteBaseline(v, o.acceptGrowth)
 	}
 	if o.acceptGrowth {
