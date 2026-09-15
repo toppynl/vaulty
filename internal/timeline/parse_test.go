@@ -25,8 +25,8 @@ func countCode(diags []diag.Diag, code diag.Code) int {
 }
 
 const simplePage = "---\ntitle: X\n---\n\n# X\n\nbody\n\n---\n\n## Timeline\n\n" +
-	"- **2026-08-01** | Peep — kickoff.\n" +
-	"- **2026-08-03** | Peep — followup.\n"
+	"- **2026-08-01** | Robin — kickoff.\n" +
+	"- **2026-08-03** | Robin — followup.\n"
 
 func TestParseSimpleBlock(t *testing.T) {
 	p := parseSrc(t, simplePage)
@@ -50,9 +50,9 @@ func TestParseSimpleBlock(t *testing.T) {
 
 func TestParseMonthOnlyAndRangeForms(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-07** | Peep — month only.\n" +
-		"- **2026-08-2x** | Peep — decade.\n" +
-		"- **2026-09-10/12** | Peep — day range.\n"
+		"- **2026-07** | Robin — month only.\n" +
+		"- **2026-08-2x** | Robin — decade.\n" +
+		"- **2026-09-10/12** | Robin — day range.\n"
 	p := parseSrc(t, src)
 	b := p.Blocks[0]
 	if len(b.Entries) != 3 {
@@ -65,8 +65,8 @@ func TestParseMonthOnlyAndRangeForms(t *testing.T) {
 
 func TestParseUnparseableAttachAfterEntries(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — kickoff.\n" +
-		"- **juli/augustus 2026** | Peep — vague.\n"
+		"- **2026-08-01** | Robin — kickoff.\n" +
+		"- **juli/augustus 2026** | Robin — vague.\n"
 	p := parseSrc(t, src)
 	b := p.Blocks[0]
 	if len(b.Entries) != 1 {
@@ -82,7 +82,7 @@ func TestParseUnparseableAttachAfterEntries(t *testing.T) {
 
 func TestParseUnparseableFirstEntryBlocks(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **juli/augustus 2026** | Peep — vague.\n"
+		"- **juli/augustus 2026** | Robin — vague.\n"
 	p := parseSrc(t, src)
 	b := p.Blocks[0]
 	if b.Sortable() {
@@ -98,10 +98,10 @@ func TestParseUnparseableFirstEntryBlocks(t *testing.T) {
 
 func TestParseSkipCasesForbiddenAndLoose(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — kickoff.\n" +
+		"- **2026-08-01** | Robin — kickoff.\n" +
 		"unindented continuation\n" +
 		"```\n" +
-		"- **2026-08-03** | Peep — next.\n"
+		"- **2026-08-03** | Robin — next.\n"
 	p := parseSrc(t, src)
 	b := p.Blocks[0]
 	if b.Sortable() {
@@ -127,10 +127,10 @@ func TestParseSkipCasesForbiddenAndLoose(t *testing.T) {
 
 func TestParseWhitespacePreservation(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — kickoff; long entries\n" +
+		"- **2026-08-01** | Robin — kickoff; long entries\n" +
 		"  wrap onto indented continuation lines.\n" +
 		"\n" +
-		"- **2026-08-03** | Peep — next.\n"
+		"- **2026-08-03** | Robin — next.\n"
 	p := parseSrc(t, src)
 	b := p.Blocks[0]
 	if !b.Sortable() {
@@ -154,8 +154,8 @@ func TestParseWhitespacePreservation(t *testing.T) {
 
 func TestParseSafetyCheckTL005OutOfOrder(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-03** | Peep — later first.\n" +
-		"- **2026-08-01** | Peep — earlier second.\n"
+		"- **2026-08-03** | Robin — later first.\n" +
+		"- **2026-08-01** | Robin — earlier second.\n"
 	p := parseSrc(t, src)
 	b := p.Blocks[0]
 	if !hasCode(b.Diags, diag.TL005NotAscending) {
@@ -171,9 +171,9 @@ func TestParseSameDateTieBreak(t *testing.T) {
 	// keep the oracle's flip semantics (see sort_test.go for the sort
 	// itself); here we only check parsing keeps all same-date entries.
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n" +
-		"- **2026-08-01** | Peep — b.\n" +
-		"- **2026-08-02** | Peep — c.\n"
+		"- **2026-08-01** | Robin — a.\n" +
+		"- **2026-08-01** | Robin — b.\n" +
+		"- **2026-08-02** | Robin — c.\n"
 	p := parseSrc(t, src)
 	b := p.Blocks[0]
 	if len(b.Entries) != 3 {
@@ -195,7 +195,7 @@ func TestParseNoEntries(t *testing.T) {
 
 func TestParseInvalidDate(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-02-30** | Peep — impossible day.\n"
+		"- **2026-02-30** | Robin — impossible day.\n"
 	p := parseSrc(t, src)
 	b := p.Blocks[0]
 	if !hasCode(b.Diags, diag.TL010InvalidDate) {
@@ -205,9 +205,9 @@ func TestParseInvalidDate(t *testing.T) {
 
 func TestParseMultipleBlocks(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n\n" +
+		"- **2026-08-01** | Robin — a.\n\n" +
 		"---\n\n## Timeline\n\n" +
-		"- **2026-08-02** | Peep — b.\n"
+		"- **2026-08-02** | Robin — b.\n"
 	p := parseSrc(t, src)
 	if len(p.Blocks) != 2 {
 		t.Fatalf("blocks = %d, want 2", len(p.Blocks))
@@ -219,7 +219,7 @@ func TestParseMultipleBlocks(t *testing.T) {
 
 func TestParseMissingDivider(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n"
+		"- **2026-08-01** | Robin — a.\n"
 	p := parseSrc(t, src)
 	if !hasCode(p.Diags, diag.TL002MissingDivider) {
 		t.Error("expected TL002")
@@ -228,7 +228,7 @@ func TestParseMissingDivider(t *testing.T) {
 
 func TestParseContentAfterTimeline(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n\n" +
+		"- **2026-08-01** | Robin — a.\n\n" +
 		"## Another section\n\nmore text\n"
 	p := parseSrc(t, src)
 	if !hasCode(p.Diags, diag.TL003ContentAfter) {
@@ -237,7 +237,7 @@ func TestParseContentAfterTimeline(t *testing.T) {
 }
 
 func TestParseUnclosedFrontmatterFM001(t *testing.T) {
-	src := "---\ntitle: X\nno closing\n\n## Timeline\n\n- **2026-08-01** | Peep — a.\n"
+	src := "---\ntitle: X\nno closing\n\n## Timeline\n\n- **2026-08-01** | Robin — a.\n"
 	p := parseSrc(t, src)
 	if !hasCode(p.Diags, diag.FM001UnterminatedFrontmatter) {
 		t.Error("expected FM001")

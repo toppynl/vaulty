@@ -8,18 +8,18 @@ import (
 
 // A valid append: inserting one entry at the end of an existing block.
 const validOrig = "---\ntitle: X\nupdated: 2026-01-01\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-	"- **2026-08-01** | Peep — a.\n"
+	"- **2026-08-01** | Robin — a.\n"
 
 const validNext = "---\ntitle: X\nupdated: 2026-01-01\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-	"- **2026-08-01** | Peep — a.\n" +
-	"- **2026-08-03** | Peep — b.\n"
+	"- **2026-08-01** | Robin — a.\n" +
+	"- **2026-08-03** | Robin — b.\n"
 
 func validExpect() Expect {
 	return Expect{
-		RegionStart:  len(validOrig) - len("- **2026-08-01** | Peep — a.\n"),
+		RegionStart:  len(validOrig) - len("- **2026-08-01** | Robin — a.\n"),
 		RegionEnd:    len(validOrig),
 		NewRegionEnd: len(validNext),
-		Added:        []string{"- **2026-08-03** | Peep — b."},
+		Added:        []string{"- **2026-08-03** | Robin — b."},
 	}
 }
 
@@ -32,7 +32,7 @@ func TestVerifyValidAppend(t *testing.T) {
 func TestVerifyRefusesDroppedLine(t *testing.T) {
 	// Drop the existing entry line from `next`.
 	bad := "---\ntitle: X\nupdated: 2026-01-01\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-03** | Peep — b.\n"
+		"- **2026-08-03** | Robin — b.\n"
 	e := validExpect()
 	e.NewRegionEnd = len(bad)
 	if err := Verify([]byte(validOrig), []byte(bad), e, config.Default()); err == nil {
@@ -42,8 +42,8 @@ func TestVerifyRefusesDroppedLine(t *testing.T) {
 
 func TestVerifyRefusesByteChangeBeforeRegion(t *testing.T) {
 	bad := "---\ntitle: X\nupdated: 2026-01-01\n---\n\nBODY CHANGED\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n" +
-		"- **2026-08-03** | Peep — b.\n"
+		"- **2026-08-01** | Robin — a.\n" +
+		"- **2026-08-03** | Robin — b.\n"
 	e := validExpect()
 	e.RegionStart += len("BODY CHANGED") - len("body")
 	e.RegionEnd += len("BODY CHANGED") - len("body")
@@ -66,8 +66,8 @@ func TestVerifyRefusesByteChangeAfterRegion(t *testing.T) {
 
 func TestVerifyRefusesFrontmatterChangeWithoutFlag(t *testing.T) {
 	bad := "---\ntitle: X\nupdated: 2026-09-15\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n" +
-		"- **2026-08-03** | Peep — b.\n"
+		"- **2026-08-01** | Robin — a.\n" +
+		"- **2026-08-03** | Robin — b.\n"
 	e := validExpect()
 	if err := Verify([]byte(validOrig), []byte(bad), e, config.Default()); err == nil {
 		t.Fatal("expected refusal: frontmatter changed without AllowUpdatedLine")
@@ -76,8 +76,8 @@ func TestVerifyRefusesFrontmatterChangeWithoutFlag(t *testing.T) {
 
 func TestVerifyAllowsFrontmatterChangeWithFlag(t *testing.T) {
 	bad := "---\ntitle: X\nupdated: 2026-09-15\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n" +
-		"- **2026-08-03** | Peep — b.\n"
+		"- **2026-08-01** | Robin — a.\n" +
+		"- **2026-08-03** | Robin — b.\n"
 	e := validExpect()
 	e.AllowUpdatedLine = true
 	if err := Verify([]byte(validOrig), []byte(bad), e, config.Default()); err != nil {
@@ -87,8 +87,8 @@ func TestVerifyAllowsFrontmatterChangeWithFlag(t *testing.T) {
 
 func TestVerifyRefusesSecondFrontmatterLineChanged(t *testing.T) {
 	bad := "---\ntitle: Y\nupdated: 2026-09-15\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n" +
-		"- **2026-08-03** | Peep — b.\n"
+		"- **2026-08-01** | Robin — a.\n" +
+		"- **2026-08-03** | Robin — b.\n"
 	e := validExpect()
 	e.AllowUpdatedLine = true
 	if err := Verify([]byte(validOrig), []byte(bad), e, config.Default()); err == nil {
@@ -98,8 +98,8 @@ func TestVerifyRefusesSecondFrontmatterLineChanged(t *testing.T) {
 
 func TestVerifyRefusesUnsortedResult(t *testing.T) {
 	bad := "---\ntitle: X\nupdated: 2026-01-01\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-03** | Peep — b.\n" +
-		"- **2026-08-01** | Peep — a.\n"
+		"- **2026-08-03** | Robin — b.\n" +
+		"- **2026-08-01** | Robin — a.\n"
 	e := validExpect()
 	e.NewRegionEnd = len(bad)
 	if err := Verify([]byte(validOrig), []byte(bad), e, config.Default()); err == nil {

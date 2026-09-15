@@ -1,5 +1,5 @@
 // Package config loads the per-vault .vaulty.yml (DESIGN.md §4). Every key is
-// optional; absent keys keep the defaults, which match Peep's vault.
+// optional; absent keys keep the defaults, which match Robin's vault.
 package config
 
 import (
@@ -58,7 +58,7 @@ type PageChecks struct {
 	HeadingKeywords        []string `yaml:"heading_keywords" json:"heading_keywords"`
 }
 
-// Default returns the built-in configuration (Peep's vault layout).
+// Default returns the built-in configuration (Robin's vault layout).
 func Default() *Config {
 	return &Config{
 		Version:     CurrentVersion,

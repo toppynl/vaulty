@@ -21,17 +21,17 @@ func mustAppend(t *testing.T, src, entry string, opt AppendOptions) (*AppendResu
 }
 
 func TestValidateEntryRejectsPartialDate(t *testing.T) {
-	if _, _, err := ValidateEntry("- **2026-08** | Peep — x."); err == nil {
+	if _, _, err := ValidateEntry("- **2026-08** | Robin — x."); err == nil {
 		t.Fatal("expected error for partial date")
 	}
 }
 
 func TestValidateEntryPrependsDash(t *testing.T) {
-	lines, date, err := ValidateEntry("**2026-08-01** | Peep — x.")
+	lines, date, err := ValidateEntry("**2026-08-01** | Robin — x.")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lines[0] != "- **2026-08-01** | Peep — x." {
+	if lines[0] != "- **2026-08-01** | Robin — x." {
 		t.Errorf("lines[0] = %q", lines[0])
 	}
 	if date.Key != "2026-08-01" {
@@ -47,11 +47,11 @@ func TestValidateEntryRejectsBadShape(t *testing.T) {
 
 func TestAppendNewSectionNoDivider(t *testing.T) {
 	src := "---\ntitle: X\n---\n\n# X\n\nbody\n"
-	res, _ := mustAppend(t, src, "- **2026-09-15** | Peep — a.", AppendOptions{Today: "2026-09-15"})
+	res, _ := mustAppend(t, src, "- **2026-09-15** | Robin — a.", AppendOptions{Today: "2026-09-15"})
 	if res.Position != PosNewSection || !res.CreatedSection {
 		t.Fatalf("position=%s createdSection=%v", res.Position, res.CreatedSection)
 	}
-	want := "---\ntitle: X\n---\n\n# X\n\nbody\n\n---\n\n## Timeline\n\n- **2026-09-15** | Peep — a.\n"
+	want := "---\ntitle: X\n---\n\n# X\n\nbody\n\n---\n\n## Timeline\n\n- **2026-09-15** | Robin — a.\n"
 	if string(res.New) != want {
 		t.Errorf("New =\n%q\nwant\n%q", res.New, want)
 	}
@@ -59,8 +59,8 @@ func TestAppendNewSectionNoDivider(t *testing.T) {
 
 func TestAppendNewSectionExistingDivider(t *testing.T) {
 	src := "---\ntitle: X\n---\n\n# X\n\nbody\n\n---\n"
-	res, _ := mustAppend(t, src, "- **2026-09-15** | Peep — a.", AppendOptions{Today: "2026-09-15"})
-	want := "---\ntitle: X\n---\n\n# X\n\nbody\n\n---\n\n## Timeline\n\n- **2026-09-15** | Peep — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-09-15** | Robin — a.", AppendOptions{Today: "2026-09-15"})
+	want := "---\ntitle: X\n---\n\n# X\n\nbody\n\n---\n\n## Timeline\n\n- **2026-09-15** | Robin — a.\n"
 	if string(res.New) != want {
 		t.Errorf("New =\n%q\nwant\n%q", res.New, want)
 	}
@@ -68,8 +68,8 @@ func TestAppendNewSectionExistingDivider(t *testing.T) {
 
 func TestAppendEmptyBlock(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n"
-	res, _ := mustAppend(t, src, "- **2026-09-15** | Peep — a.", AppendOptions{Today: "2026-09-15"})
-	want := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n- **2026-09-15** | Peep — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-09-15** | Robin — a.", AppendOptions{Today: "2026-09-15"})
+	want := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n- **2026-09-15** | Robin — a.\n"
 	if string(res.New) != want {
 		t.Errorf("New =\n%q\nwant\n%q", res.New, want)
 	}
@@ -77,33 +77,33 @@ func TestAppendEmptyBlock(t *testing.T) {
 
 func TestAppendPositionEndStartMiddle(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n" +
-		"- **2026-08-03** | Peep — c.\n"
+		"- **2026-08-01** | Robin — a.\n" +
+		"- **2026-08-03** | Robin — c.\n"
 
-	resEnd, _ := mustAppend(t, src, "- **2026-08-05** | Peep — end.", AppendOptions{Today: "2026-09-15"})
+	resEnd, _ := mustAppend(t, src, "- **2026-08-05** | Robin — end.", AppendOptions{Today: "2026-09-15"})
 	if resEnd.Position != PosEnd {
 		t.Errorf("end: position = %s", resEnd.Position)
 	}
 
-	resStart, _ := mustAppend(t, src, "- **2026-07-01** | Peep — start.", AppendOptions{Today: "2026-09-15"})
+	resStart, _ := mustAppend(t, src, "- **2026-07-01** | Robin — start.", AppendOptions{Today: "2026-09-15"})
 	if resStart.Position != PosStart {
 		t.Errorf("start: position = %s", resStart.Position)
 	}
 
-	resMiddle, _ := mustAppend(t, src, "- **2026-08-02** | Peep — middle.", AppendOptions{Today: "2026-09-15"})
+	resMiddle, _ := mustAppend(t, src, "- **2026-08-02** | Robin — middle.", AppendOptions{Today: "2026-09-15"})
 	if resMiddle.Position != PosMiddle {
 		t.Errorf("middle: position = %s", resMiddle.Position)
 	}
-	if !strings.Contains(string(resMiddle.New), "a.\n- **2026-08-02** | Peep — middle.\n- **2026-08-03**") {
+	if !strings.Contains(string(resMiddle.New), "a.\n- **2026-08-02** | Robin — middle.\n- **2026-08-03**") {
 		t.Errorf("middle insertion not between a and c:\n%s", resMiddle.New)
 	}
 }
 
 func TestAppendSameDateGoesAfterExisting(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n" +
-		"- **2026-08-01** | Peep — b.\n"
-	res, _ := mustAppend(t, src, "- **2026-08-01** | Peep — c.", AppendOptions{Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n" +
+		"- **2026-08-01** | Robin — b.\n"
+	res, _ := mustAppend(t, src, "- **2026-08-01** | Robin — c.", AppendOptions{Today: "2026-09-15"})
 	if res.Position != PosEnd {
 		t.Errorf("position = %s, want end (same-date goes after existing)", res.Position)
 	}
@@ -114,17 +114,17 @@ func TestAppendSameDateGoesAfterExisting(t *testing.T) {
 
 func TestAppendGapStyleZeroOneAuto(t *testing.T) {
 	srcGap0 := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n" +
-		"- **2026-08-02** | Peep — b.\n"
-	res0, _ := mustAppend(t, srcGap0, "- **2026-08-03** | Peep — c.", AppendOptions{Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n" +
+		"- **2026-08-02** | Robin — b.\n"
+	res0, _ := mustAppend(t, srcGap0, "- **2026-08-03** | Robin — c.", AppendOptions{Today: "2026-09-15"})
 	if strings.Contains(string(res0.New), "b.\n\n- **2026-08-03**") {
 		t.Errorf("expected gap 0 (auto from existing gap-0 block):\n%s", res0.New)
 	}
 
 	srcGap1 := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n\n" +
-		"- **2026-08-02** | Peep — b.\n"
-	res1, _ := mustAppend(t, srcGap1, "- **2026-08-03** | Peep — c.", AppendOptions{Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n\n" +
+		"- **2026-08-02** | Robin — b.\n"
+	res1, _ := mustAppend(t, srcGap1, "- **2026-08-03** | Robin — c.", AppendOptions{Today: "2026-09-15"})
 	if !strings.Contains(string(res1.New), "b.\n\n- **2026-08-03**") {
 		t.Errorf("expected gap 1 (auto from existing gap-1 block):\n%s", res1.New)
 	}
@@ -132,8 +132,8 @@ func TestAppendGapStyleZeroOneAuto(t *testing.T) {
 
 func TestAppendDuplicate(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n"
-	res, _ := mustAppend(t, src, "- **2026-08-01** | Peep — a.", AppendOptions{Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-08-01** | Robin — a.", AppendOptions{Today: "2026-09-15"})
 	if !res.AlreadyPresent {
 		t.Fatal("expected AlreadyPresent")
 	}
@@ -141,8 +141,8 @@ func TestAppendDuplicate(t *testing.T) {
 
 func TestAppendTouch(t *testing.T) {
 	src := "---\ntitle: X\nupdated: 2026-01-01\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n"
-	res, _ := mustAppend(t, src, "- **2026-08-03** | Peep — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-08-03** | Robin — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
 	if !res.Touched {
 		t.Fatal("expected Touched")
 	}
@@ -152,12 +152,12 @@ func TestAppendTouch(t *testing.T) {
 }
 
 // TestAppendTouchFutureDate: --touch always sets updated: to today, even
-// overriding an existing future date (Peep's decision, 2026-09-15: "zet op
+// overriding an existing future date (Robin's decision, 2026-09-15: "zet op
 // vandaag" — DESIGN.md §8.5).
 func TestAppendTouchFutureDate(t *testing.T) {
 	src := "---\ntitle: X\nupdated: 2026-09-20\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n"
-	res, _ := mustAppend(t, src, "- **2026-08-03** | Peep — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-08-03** | Robin — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
 	if !res.Touched {
 		t.Fatal("expected Touched: today must override a future updated: date")
 	}
@@ -169,8 +169,8 @@ func TestAppendTouchFutureDate(t *testing.T) {
 // TestAppendTouchAlreadyToday: no-op when updated: already reads today.
 func TestAppendTouchAlreadyToday(t *testing.T) {
 	src := "---\ntitle: X\nupdated: 2026-09-15\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n"
-	res, _ := mustAppend(t, src, "- **2026-08-03** | Peep — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-08-03** | Robin — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
 	if res.Touched {
 		t.Fatal("should not touch when updated: already reads today")
 	}
@@ -178,8 +178,8 @@ func TestAppendTouchAlreadyToday(t *testing.T) {
 
 func TestAppendTouchMissingKey(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n"
-	res, _ := mustAppend(t, src, "- **2026-08-03** | Peep — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-08-03** | Robin — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
 	if !res.Touched {
 		t.Fatal("expected Touched when key is missing")
 	}
@@ -218,25 +218,25 @@ func TestAppendSameDateMiddleReportsCorrectLine(t *testing.T) {
 
 func TestAppendRefusalsUnsortedAndMultipleBlocks(t *testing.T) {
 	unsorted := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-03** | Peep — a.\n" +
-		"- **2026-08-01** | Peep — b.\n"
-	if _, err := Append(parseFor(t, unsorted), "- **2026-08-05** | Peep — c.", AppendOptions{Today: "2026-09-15"}, config.Default()); err == nil {
+		"- **2026-08-03** | Robin — a.\n" +
+		"- **2026-08-01** | Robin — b.\n"
+	if _, err := Append(parseFor(t, unsorted), "- **2026-08-05** | Robin — c.", AppendOptions{Today: "2026-09-15"}, config.Default()); err == nil {
 		t.Error("expected refusal on unsorted block")
 	}
 
 	multi := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n\n" +
+		"- **2026-08-01** | Robin — a.\n\n" +
 		"---\n\n## Timeline\n\n" +
-		"- **2026-08-02** | Peep — b.\n"
-	if _, err := Append(parseFor(t, multi), "- **2026-08-05** | Peep — c.", AppendOptions{Today: "2026-09-15"}, config.Default()); err == nil {
+		"- **2026-08-02** | Robin — b.\n"
+	if _, err := Append(parseFor(t, multi), "- **2026-08-05** | Robin — c.", AppendOptions{Today: "2026-09-15"}, config.Default()); err == nil {
 		t.Error("expected refusal on multiple blocks")
 	}
 }
 
 func TestAppendFutureDateWarnsButStillAppends(t *testing.T) {
 	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
-		"- **2026-08-01** | Peep — a.\n"
-	res, _ := mustAppend(t, src, "- **2026-12-25** | Peep — future.", AppendOptions{Today: "2026-09-15"})
+		"- **2026-08-01** | Robin — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-12-25** | Robin — future.", AppendOptions{Today: "2026-09-15"})
 	if !res.FutureDate {
 		t.Error("expected FutureDate flag")
 	}
