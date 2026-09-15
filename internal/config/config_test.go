@@ -31,6 +31,10 @@ func TestLoadOverlay(t *testing.T) {
 	if cfg.Lint.Severity["TL006"] != "error" {
 		t.Errorf("severity override not applied: %v", cfg.Lint.Severity)
 	}
+	// Merge, not replace: other page_checks defaults survive.
+	if cfg.Lint.PageChecks.CompiledTruthMaxTokens != 3000 {
+		t.Errorf("page_checks default lost: %+v", cfg.Lint.PageChecks)
+	}
 }
 
 func TestLoadOverridesRatchet(t *testing.T) {
