@@ -33,6 +33,15 @@ func (a *app) runTimelineRead(o readOpts, pageArg string) error {
 	if o.headings && o.section != "" {
 		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--headings and --section are mutually exclusive")}
 	}
+	if o.headings && o.frontmatter {
+		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--headings does not combine with --frontmatter")}
+	}
+	if o.headings && o.maxBytesSet {
+		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--headings does not combine with --max-bytes")}
+	}
+	if o.section != "" && (o.timeline || o.since != "" || o.last != 0) {
+		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--section does not combine with --timeline/--since/--last")}
+	}
 	if o.maxBytesSet && o.maxBytes <= 0 {
 		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--max-bytes must be > 0")}
 	}
@@ -53,9 +62,10 @@ func (a *app) runTimelineRead(o readOpts, pageArg string) error {
 
 	var section *doc.Heading
 	if o.section != "" {
-		h, ok := findSection(doc.Headings(d), o.section)
+		hs := doc.Headings(d)
+		h, ok := findSection(hs, o.section)
 		if !ok {
-			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("no such section: %q", o.section)}
+			return &ExitError{Code: ExitUsage, Err: sectionNotFoundError(hs, o.section)}
 		}
 		section = &h
 	}
@@ -165,6 +175,51 @@ func findSection(hs []doc.Heading, query string) (doc.Heading, bool) {
 
 func normalizeHeadingQuery(s string) string {
 	return strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(s), "#"))
+}
+
+// sectionNotFoundError builds the --section "no such section" error,
+// suggesting the closest heading(s) instead of leaving the caller to guess
+// why an otherwise-plausible query didn't match: an exact case-insensitive
+// match first (the query differs only in case), else any heading whose
+// text contains the query or vice versa (case-insensitive), in file order,
+// capped at 5 so a page with many loosely-matching headings doesn't spam
+// the error.
+func sectionNotFoundError(hs []doc.Heading, query string) error {
+	want := normalizeHeadingQuery(query)
+	wantFold := strings.ToLower(want)
+
+	var exact []string
+	for _, h := range hs {
+		if strings.EqualFold(h.Text, want) {
+			exact = append(exact, h.Text)
+		}
+	}
+	if len(exact) > 0 {
+		return fmt.Errorf("no such section: %q (case-sensitive; did you mean %s?)", query, quoteJoin(exact))
+	}
+
+	var closeMatches []string
+	for _, h := range hs {
+		fold := strings.ToLower(h.Text)
+		if strings.Contains(fold, wantFold) || strings.Contains(wantFold, fold) {
+			closeMatches = append(closeMatches, h.Text)
+			if len(closeMatches) == 5 {
+				break
+			}
+		}
+	}
+	if len(closeMatches) > 0 {
+		return fmt.Errorf("no such section: %q (closest matches: %s)", query, quoteJoin(closeMatches))
+	}
+	return fmt.Errorf("no such section: %q", query)
+}
+
+func quoteJoin(ss []string) string {
+	quoted := make([]string, len(ss))
+	for i, s := range ss {
+		quoted[i] = fmt.Sprintf("%q", s)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // sectionText is the section's bytes with blank leading/trailing lines trimmed.
