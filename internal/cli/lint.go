@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -179,11 +180,20 @@ func resolveWriteBaselineOld(v *vault.Vault, path string) (*lint.Baseline, error
 
 	headData, headErr := gitShowAtHEAD(v.Root, relPath)
 	if headErr != nil {
-		// Not tracked at HEAD (or no HEAD commit yet): nothing committed to
-		// diff against. If a file already exists on disk, treat it as the
-		// old baseline (matches non-git behavior); otherwise this is a real
-		// bootstrap.
-		return disk, nil
+		if errors.Is(headErr, errGitPathNotAtHEAD) {
+			// Not tracked at HEAD (or no HEAD commit yet): nothing
+			// committed to diff against. If a file already exists on disk,
+			// treat it as the old baseline (matches non-git behavior);
+			// otherwise this is a real bootstrap.
+			return disk, nil
+		}
+		// Any other git failure (e.g. the vault living in a subdirectory
+		// of the repo and the path being resolved wrong) must never be
+		// treated as "nothing at HEAD" — that would silently reopen the
+		// bypass §6.1a closes: `rm .vaulty-baseline.json &&
+		// --write-baseline` would then look like a bootstrap and accept
+		// any growth. Refuse instead of guessing.
+		return nil, fmt.Errorf("checking %s at HEAD: %w", v.Config.Lint.BaselinePath, headErr)
 	}
 
 	var head lint.Baseline
@@ -213,17 +223,52 @@ func isGitRepo(root string) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
-// gitShowAtHEAD returns the content of relPath as committed at HEAD. It
-// errors (distinctly from I/O errors, but callers here only need "not
-// found or no HEAD yet") when the path is not tracked at HEAD.
+// errGitPathNotAtHEAD marks a gitShowAtHEAD failure that means "nothing
+// committed to diff against" (no HEAD commit yet, or relPath not tracked
+// at HEAD) — the only case resolveWriteBaselineOld may fall back from.
+// Any other git failure is returned unwrapped and must be refused, not
+// silently treated as a bootstrap.
+var errGitPathNotAtHEAD = errors.New("path not present at HEAD")
+
+// gitShowAtHEAD returns the content of relPath (relative to root, the
+// vault root) as committed at HEAD. It runs with `-C root` and a
+// cwd-relative pathspec (`HEAD:./relPath`) rather than plain
+// `HEAD:relPath` run with cmd.Dir=root: a bare `HEAD:<path>` is always
+// resolved relative to the *repo's* top level, so when the vault is a
+// submodule/subdirectory of a larger repo, `HEAD:relPath` silently means
+// a different (usually nonexistent) path. `./`-prefixing makes git resolve
+// it relative to `-C`'s directory instead, matching what "relPath, from
+// the vault root" actually means regardless of where the repo root is.
 func gitShowAtHEAD(root, relPath string) ([]byte, error) {
-	cmd := exec.Command("git", "show", "HEAD:"+relPath)
-	cmd.Dir = root
+	cmd := exec.Command("git", "-C", root, "show", "HEAD:./"+relPath)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		msg := stderr.String()
+		if gitShowMeansNotAtHEAD(msg) {
+			return nil, errGitPathNotAtHEAD
+		}
+		return nil, fmt.Errorf("git show HEAD:./%s: %w: %s", relPath, err, strings.TrimSpace(msg))
 	}
 	return out, nil
+}
+
+// gitShowMeansNotAtHEAD reports whether git's stderr for a failed
+// `git show HEAD:./path` means "there is genuinely nothing to compare
+// against" (path untracked at HEAD, or no HEAD commit yet) rather than
+// some other git failure (permission, corruption, wrong cwd, ...) that
+// must be refused instead of treated as a bootstrap.
+func gitShowMeansNotAtHEAD(stderr string) bool {
+	switch {
+	case strings.Contains(stderr, "does not exist in"),
+		strings.Contains(stderr, "exists on disk, but not in"),
+		strings.Contains(stderr, "bad revision 'HEAD'"),
+		strings.Contains(stderr, "unknown revision or path not in the working tree"):
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *app) renderLint(res *lint.Result, showWarnings bool) {
