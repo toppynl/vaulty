@@ -75,15 +75,28 @@ func runGoldenCase(t *testing.T, dir string) {
 
 	t.Setenv("VAULTY_TODAY", "2026-09-15")
 	t.Setenv("VAULTY_ROOT", "")
+	stdinTTYOverride = nil
+	t.Cleanup(func() { stdinTTYOverride = nil })
 	if envB, err := os.ReadFile(filepath.Join(dir, "env")); err == nil {
 		for _, line := range strings.Split(strings.TrimRight(string(envB), "\n"), "\n") {
 			if line == "" {
 				continue
 			}
 			kv := strings.SplitN(line, "=", 2)
-			if len(kv) == 2 {
-				t.Setenv(kv[0], kv[1])
+			if len(kv) != 2 {
+				continue
 			}
+			// VAULTY_STDIN_TTY is a golden-test-only hook (tty.go's
+			// stdinTTYOverride): it forces the answer for cases that
+			// exercise --accept-growth's merge logic itself, without a
+			// real terminal. It is NOT an env var the production binary
+			// reads — never set it outside this harness.
+			if kv[0] == "VAULTY_STDIN_TTY" {
+				b := kv[1] == "1"
+				stdinTTYOverride = &b
+				continue
+			}
+			t.Setenv(kv[0], kv[1])
 		}
 	}
 

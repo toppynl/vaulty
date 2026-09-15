@@ -616,11 +616,17 @@ judgment; agents run `--write-baseline` bare, only a person runs it with
    agent from typing it. `--write-baseline --accept-growth` now refuses
    (`ExitUsage`) unless stdin is an interactive terminal (a character
    device), so it only ever runs from a human actually sitting at a
-   prompt. `internal/cli/tty.go` (`stdinIsTTY`) also honors
-   `VAULTY_STDIN_TTY=1|0` so golden tests can exercise the
-   `--accept-growth` merge logic itself without a real terminal, while
-   still proving the gate refuses by default (a `bytes.Buffer` stdin,
-   which the golden harness always uses, is never a TTY).
+   prompt. The production binary itself reads no environment variable to
+   decide this — that would just move the bypass to `VAULTY_STDIN_TTY=1
+   vaulty ...`, which `Bash(vaulty:*)` permits exactly as freely as the
+   flag it's meant to gate. Golden tests instead force the answer through
+   an unexported package var (`stdinTTYOverride` in `internal/cli/tty.go`)
+   that only `golden_test.go` ever sets, from a case's `env` file
+   (`VAULTY_STDIN_TTY=1|0` there is a test-harness convention, not
+   something the shipped binary looks at), so the `--accept-growth` merge
+   logic can be exercised without a real terminal while still proving the
+   gate refuses by default (a `bytes.Buffer` stdin, which the golden
+   harness always uses, is never a TTY).
 
 A page with zero TL006/TL008 findings and no PG002-over-max finding gets no
 entry at all (adding one would be a no-op: an absent page's implicit `{0,0,0}`
