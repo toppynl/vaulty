@@ -1,1 +1,1 @@
-vaulty: op must not contain "|"
+vaulty: op must match ^[a-z0-9-]+$

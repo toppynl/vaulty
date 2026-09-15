@@ -72,7 +72,7 @@ func (a *app) runLogAppend(o logAppendOpts, op, title string) error {
 // on disk. The lock also serializes concurrent appenders (two processes
 // racing to append would otherwise both compute the same end offset and
 // clobber each other) and, because nothing is renamed over the path, a
-// log.md that's a symlink stays a symlink (DESIGN.md §16.2).
+// log.md that's a symlink stays a symlink (DESIGN.md §17.2).
 func appendLogEntry(full, date, op, title, body string) (line int, err error) {
 	f, err := os.OpenFile(full, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
@@ -99,7 +99,7 @@ func appendLogEntry(full, date, op, title, body string) (line int, err error) {
 	// The new heading's line number: every '\n' already in orig, plus every
 	// '\n' in the separator that precedes the heading, plus one (1-based).
 	// Cheaper than re-reading/re-parsing the file after the write, and
-	// exact — see the derivation in DESIGN.md §16.2.
+	// exact — see the derivation in DESIGN.md §17.2.
 	line = bytes.Count(orig, []byte("\n")) + strings.Count(sep, "\n") + 1
 	return line, nil
 }
@@ -170,7 +170,7 @@ func (a *app) runLogLast(o logLastOpts) error {
 	// entries added out of date order by hand/other tooling) — sort by
 	// date before taking the tail, so "last N" means "N most recent by
 	// date", stably keeping file order among entries sharing a date
-	// (DESIGN.md §16.3).
+	// (DESIGN.md §17.3).
 	filtered = vaultlog.SortByDate(filtered)
 	if o.n > 0 && len(filtered) > o.n {
 		filtered = filtered[len(filtered)-o.n:]
@@ -262,10 +262,15 @@ func (a *app) runLogLint() error {
 			fmt.Fprintf(a.stdout, "%s:%d: malformed: %s: %s\n", rel, m.Line, m.Reason, m.Text)
 		}
 		for _, w := range outOfOrder {
-			fmt.Fprintf(a.stdout, "%s:%d: out-of-order: entry dated %s appears after %s (line %d)\n", rel, w.Line, w.Date, w.PrevDate, w.PrevLine)
+			fmt.Fprintf(a.stdout, "%s:%d: warning out-of-order: entry dated %s appears after %s (line %d)\n", rel, w.Line, w.Date, w.PrevDate, w.PrevLine)
 		}
 	}
-	if len(malformed) > 0 || len(outOfOrder) > 0 {
+	// Out-of-order is a warning only — the real vault's log.md has ~41 of
+	// them in its legitimate append-only history (entries added by hand or
+	// other tooling, not a defect), so it must never fail the exit code on
+	// its own or `log lint` would be permanently red there. Only a
+	// malformed heading (a real format defect) fails the command.
+	if len(malformed) > 0 {
 		return &ExitError{Code: ExitFindings, Err: nil}
 	}
 	return nil

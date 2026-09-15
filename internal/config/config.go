@@ -31,7 +31,7 @@ type Config struct {
 	Log         Log         `yaml:"log" json:"log"`
 }
 
-// Log configures `vaulty log append|last|lint` (DESIGN.md §16).
+// Log configures `vaulty log append|last|lint` (DESIGN.md §17).
 type Log struct {
 	// Path to the log file, relative to the vault root.
 	Path string `yaml:"path" json:"path"`

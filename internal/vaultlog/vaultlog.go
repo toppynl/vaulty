@@ -4,15 +4,18 @@
 // end of the file, but the real vault's log.md is not strictly
 // chronological throughout (entries added by hand or other tooling can be
 // out of date order), so file order must never be assumed to equal
-// chronological order — see FindOutOfOrder and DESIGN.md §16.3.
+// chronological order — see FindOutOfOrder and DESIGN.md §17.3.
 package vaultlog
 
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/toppynl/vaulty/internal/doc"
 )
 
 // DateFormat is the entry heading's date layout.
@@ -38,7 +41,7 @@ type Malformed struct {
 // Parse scans src for entries. It never errors and never stops: every
 // "## " line that isn't a valid entry heading is reported in malformed
 // instead of aborting the scan, so one bad heading never hides the rest of
-// the file (DESIGN.md §16.2 — "log last must not crash on ~6 malformed
+// the file (DESIGN.md §17.2 — "log last must not crash on ~6 malformed
 // headings in the real vault").
 func Parse(src []byte) (entries []Entry, malformed []Malformed) {
 	lines := strings.Split(string(src), "\n")
@@ -118,15 +121,22 @@ func parseHeading(line string) (Entry, string, bool) {
 	return Entry{Date: date, Op: op, Title: title}, "", true
 }
 
+// opPattern is the shape a new op must have (DESIGN.md §17.2): lowercase
+// letters, digits and hyphens only. Stricter than just banning "|" — it
+// also rules out "a+b", "x/y" and similar shapes that are fine as free text
+// but not as the short, stable, greppable category op is meant to be. This
+// makes an optional "non-bare op" lint warning unnecessary: op is kept
+// canonical from the moment it's written, not flagged after the fact.
+var opPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
 // ValidateField rejects newlines (CR or LF); an empty value; for op, any
-// "|" at all (not just the " | " separator sequence — even a bare pipe,
-// tolerated when reading a legacy entry §16.1, would make an op this
-// command itself just wrote ambiguous with the separator on every future
-// parse); and for body, a line that (trimmed) starts with "#" — such a
-// line reads as its own "## [...] ..." heading to Parse once written,
-// silently injecting a second, forged log entry into the file rather than
-// staying inside the one it was meant to be a body line of (DESIGN.md
-// §16.2).
+// shape other than opPattern; and for body, a line that is itself a real
+// ATX heading (`internal/doc`'s heading grammar: 1-6 '#'s then a space or
+// end of line — so "#123 fixed" referencing an issue number stays fine,
+// only something like "# fake" or "## [date] op | title" is refused) —
+// such a line reads as its own heading to Parse once written, silently
+// injecting a second, forged log entry into the file rather than staying
+// inside the one it was meant to be a body line of (DESIGN.md §17.2).
 func ValidateField(name, value string) error {
 	if strings.ContainsAny(value, "\r\n") {
 		return fmt.Errorf("%s must not contain a newline", name)
@@ -134,13 +144,13 @@ func ValidateField(name, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%s must not be empty", name)
 	}
-	if name == "op" && strings.Contains(value, "|") {
-		return fmt.Errorf("op must not contain \"|\"")
+	if name == "op" && !opPattern.MatchString(value) {
+		return fmt.Errorf("op must match %s", opPattern.String())
 	}
 	if name == "body" {
 		for _, line := range strings.Split(value, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "#") {
-				return fmt.Errorf("body must not contain a line starting with \"#\" (would be read as a heading)")
+			if doc.IsATXHeadingLine(line) {
+				return fmt.Errorf("body must not contain a heading line (%q looks like one)", strings.TrimSpace(line))
 			}
 		}
 	}

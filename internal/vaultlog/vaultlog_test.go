@@ -66,16 +66,24 @@ func TestValidateField(t *testing.T) {
 		wantErr            bool
 	}{
 		{"ok op", "op", "build", false},
+		{"ok op with digit and hyphen", "op", "vibe-review-2", false},
 		{"empty op", "op", "  ", true},
 		{"newline in op", "op", "bu\nild", true},
 		{"cr in title", "title", "ti\rtle", true},
 		{"pipe-sep in op", "op", "a | b", true},
 		{"bare pipe in op rejected", "op", "decision|update", true},
+		{"op with plus rejected", "op", "a+b", true},
+		{"op with slash rejected", "op", "x/y", true},
+		{"op with space rejected", "op", "two words", true},
+		{"op with uppercase rejected", "op", "Build", true},
 		{"ok body", "body", "one line", false},
 		{"newline in body", "body", "line1\nline2", true},
-		{"body line starts with hash", "body", "## fake heading", true},
-		{"body line starts with hash after spaces", "body", "   # still a heading", true},
+		{"body is a real level-1 heading", "body", "# fake heading", true},
+		{"body is a real level-2 heading (full entry shape)", "body", "## [2026-01-02] fake | injected", true},
+		{"body heading indented up to 3 spaces still counts", "body", "   # still a heading", true},
+		{"body issue reference is not a heading", "body", "#123 fixed", false},
 		{"body containing a hash mid-line is fine", "body", "see issue #42", false},
+		{"body starting with many hashes but no space is not a heading", "body", "###no-space", false},
 	}
 	for _, c := range cases {
 		err := ValidateField(c.field, c.value)

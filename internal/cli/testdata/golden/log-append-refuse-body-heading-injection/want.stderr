@@ -1,1 +1,1 @@
-vaulty: body must not contain a line starting with "#" (would be read as a heading)
+vaulty: body must not contain a heading line ("## [2026-01-02] fake | injected" looks like one)
