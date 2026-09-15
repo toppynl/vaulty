@@ -24,6 +24,12 @@ type Expect struct {
 	AllowUpdatedLine bool
 	// Migrations (reorder only) also require equal blank-line counts.
 	PreserveBlankCount bool
+
+	// Append only (check 6, DESIGN.md §8.6): the new entry's first line must
+	// sit exactly at NewFirstLine (1-based) in next, reading NewFirstLineText.
+	// Zero NewFirstLine skips the check (migrate doesn't set it).
+	NewFirstLine     int
+	NewFirstLineText string
 }
 
 func refused(check string, format string, args ...any) error {
@@ -121,6 +127,17 @@ func Verify(orig, next []byte, e Expect, cfg *config.Config) error {
 	for _, d := range page.Diags {
 		if d.Code == diag.TL001MultipleTimelines || d.Code == diag.TL002MissingDivider || d.Code == diag.TL003ContentAfter {
 			return refused("reparse", "%s: %s", d.Code, d.Message)
+		}
+	}
+
+	if e.NewFirstLine > 0 {
+		nextLines := strings.Split(string(next), "\n")
+		if e.NewFirstLine < 1 || e.NewFirstLine > len(nextLines) {
+			return refused("reparse", "NewFirstLine %d out of range (next has %d lines)", e.NewFirstLine, len(nextLines))
+		}
+		got := strings.TrimRight(nextLines[e.NewFirstLine-1], "\r")
+		if got != e.NewFirstLineText {
+			return refused("reparse", "new entry not found at reported line %d: got %q, want %q", e.NewFirstLine, got, e.NewFirstLineText)
 		}
 	}
 

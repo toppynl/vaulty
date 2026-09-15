@@ -151,12 +151,28 @@ func TestAppendTouch(t *testing.T) {
 	}
 }
 
-func TestAppendTouchAlreadyNewer(t *testing.T) {
+// TestAppendTouchFutureDate: --touch always sets updated: to today, even
+// overriding an existing future date (Peep's decision, 2026-09-15: "zet op
+// vandaag" — DESIGN.md §8.5).
+func TestAppendTouchFutureDate(t *testing.T) {
 	src := "---\ntitle: X\nupdated: 2026-09-20\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
 		"- **2026-08-01** | Peep — a.\n"
 	res, _ := mustAppend(t, src, "- **2026-08-03** | Peep — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
+	if !res.Touched {
+		t.Fatal("expected Touched: today must override a future updated: date")
+	}
+	if !strings.Contains(string(res.New), "updated: 2026-09-15\n") {
+		t.Errorf("updated: not set to today:\n%s", res.New)
+	}
+}
+
+// TestAppendTouchAlreadyToday: no-op when updated: already reads today.
+func TestAppendTouchAlreadyToday(t *testing.T) {
+	src := "---\ntitle: X\nupdated: 2026-09-15\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
+		"- **2026-08-01** | Peep — a.\n"
+	res, _ := mustAppend(t, src, "- **2026-08-03** | Peep — b.", AppendOptions{Touch: true, Today: "2026-09-15"})
 	if res.Touched {
-		t.Fatal("should not touch when already newer")
+		t.Fatal("should not touch when updated: already reads today")
 	}
 }
 
@@ -169,6 +185,34 @@ func TestAppendTouchMissingKey(t *testing.T) {
 	}
 	if !strings.Contains(string(res.New), "\nupdated: 2026-09-15\n---\n") {
 		t.Errorf("key not inserted before closing ---:\n%s", res.New)
+	}
+}
+
+// TestAppendSameDateMiddleReportsCorrectLine is a regression test for the
+// review finding that locateNewEntryLine matched the new entry by date key,
+// which finds the FIRST entry with that key — the pre-existing one — when
+// the new entry shares its date with an entry already in the middle of the
+// block. Same-date entries insert after the existing ones (DESIGN.md §8.4),
+// so the new entry's line must be one past the existing same-date entry's
+// line, not equal to it.
+func TestAppendSameDateMiddleReportsCorrectLine(t *testing.T) {
+	src := "---\ntitle: X\n---\n\nbody\n\n---\n\n## Timeline\n\n" +
+		"- **2026-01-01** | Bron A — eerste.\n" +
+		"- **2026-01-05** | Bron B — bestaand.\n" +
+		"- **2026-01-10** | Bron C — laatste.\n"
+	res, _ := mustAppend(t, src, "- **2026-01-05** | Bron D — nieuw.", AppendOptions{Today: "2026-09-15"})
+
+	if res.Position != PosMiddle {
+		t.Fatalf("Position = %s, want middle", res.Position)
+	}
+	lines := strings.Split(string(res.New), "\n")
+	if res.Line < 1 || res.Line > len(lines) {
+		t.Fatalf("Line %d out of range (%d lines)", res.Line, len(lines))
+	}
+	got := lines[res.Line-1]
+	want := "- **2026-01-05** | Bron D — nieuw."
+	if got != want {
+		t.Errorf("reported line %d reads %q, want %q", res.Line, got, want)
 	}
 }
 

@@ -49,6 +49,21 @@ func (a *app) runTimelineAppend(o appendOpts, pageArg, entry string) error {
 		return nil
 	}
 
+	// Safety check runs before every write, including --dry-run (DESIGN.md
+	// §8.6): a dry-run that would in fact be refused must exit 3, not 0.
+	expect := safety.Expect{
+		RegionStart:      res.RegionStart,
+		RegionEnd:        res.RegionEnd,
+		NewRegionEnd:     res.NewRegionEnd,
+		Added:            res.Added,
+		AllowUpdatedLine: res.AllowUpdatedLine,
+		NewFirstLine:     res.Line,
+		NewFirstLineText: res.AddedFirstLine,
+	}
+	if err := safety.Verify(orig, res.New, expect, v.Config); err != nil {
+		return &ExitError{Code: ExitRefused, Err: err}
+	}
+
 	if o.dryRun {
 		if a.flags.json {
 			return a.writeJSON(appendJSON(rel, res, true))
@@ -65,17 +80,6 @@ func (a *app) runTimelineAppend(o appendOpts, pageArg, entry string) error {
 	}
 	if string(current) != string(orig) {
 		return &ExitError{Code: ExitRefused, Err: fmt.Errorf("refused: file changed during append")}
-	}
-
-	expect := safety.Expect{
-		RegionStart:      res.RegionStart,
-		RegionEnd:        res.RegionEnd,
-		NewRegionEnd:     res.NewRegionEnd,
-		Added:            res.Added,
-		AllowUpdatedLine: res.AllowUpdatedLine,
-	}
-	if err := safety.Verify(orig, res.New, expect, v.Config); err != nil {
-		return &ExitError{Code: ExitRefused, Err: err}
 	}
 
 	if err := atomicWrite(full, res.New); err != nil {

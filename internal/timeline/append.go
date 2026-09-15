@@ -43,6 +43,12 @@ type AppendResult struct {
 	RegionStart, RegionEnd, NewRegionEnd int
 	Added                                []string
 	AllowUpdatedLine                     bool
+
+	// AddedFirstLine is the new entry's own first line, exactly as written
+	// (before any --touch edit, which never touches the body). The caller
+	// feeds it to safety.Expect.NewFirstLineText alongside Line, for safety
+	// check 6 (DESIGN.md §8.6).
+	AddedFirstLine string `json:"-"`
 }
 
 // ErrRefused wraps every reason Append declines to write (exit 3).
@@ -133,6 +139,7 @@ func Append(p *Page, entry string, opt AppendOptions, cfg *config.Config) (*Appe
 		position                             Position
 		createdSection                       bool
 		extraAdded                           []string
+		idx                                  int // position of the new entry among the reparsed block's Entries
 	)
 
 	switch {
@@ -141,13 +148,15 @@ func Append(p *Page, entry string, opt AppendOptions, cfg *config.Config) (*Appe
 		position = PosNewSection
 		createdSection = true
 		regionStart, regionEnd = len(p.Doc.Src), len(p.Doc.Src)
+		idx = 0
 	case len(block.Entries) == 0:
 		body = buildEmptyBlockReplace(p.Doc, block, lines)
 		position = PosEnd
 		regionStart, regionEnd = block.Body.Start, block.Body.End
+		idx = 0
 	default:
 		var pos Position
-		body, pos = insertIntoBlockBytes(p.Doc, block, cfg.Timeline, Entry{Date: date, Lines: lines})
+		body, pos, idx = insertIntoBlockBytes(p.Doc, block, cfg.Timeline, Entry{Date: date, Lines: lines})
 		position = pos
 		regionStart, regionEnd = block.Body.Start, block.Body.End
 	}
@@ -181,11 +190,14 @@ func Append(p *Page, entry string, opt AppendOptions, cfg *config.Config) (*Appe
 		NewRegionEnd:     newRegionEnd,
 		Added:            append(append([]string(nil), extraAdded...), lines...),
 		AllowUpdatedLine: opt.Touch,
+		AddedFirstLine:   lines[0],
 	}
 
 	// Line number: reparse the final content and locate the new entry by
-	// position, never by content matching (position is exact and cheap).
-	line, err := locateNewEntryLine(final, cfg, position, date)
+	// its position index in the block, never by content or date-key
+	// matching — a same-date insertion in the middle of the block would
+	// otherwise match the wrong (pre-existing) entry with an equal key.
+	line, err := locateNewEntryLine(final, cfg, idx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRefused, err)
 	}
@@ -344,8 +356,10 @@ func gapStyle(cfgGap string, gaps []int) int {
 	return best
 }
 
-// insertIntoBlockBytes implements DESIGN.md §8.4 "Block with entries".
-func insertIntoBlockBytes(d *doc.Doc, block *Block, cfg config.Timeline, newEntry Entry) ([]byte, Position) {
+// insertIntoBlockBytes implements DESIGN.md §8.4 "Block with entries". The
+// returned idx is the new entry's 0-based position among the resulting
+// entries (== j).
+func insertIntoBlockBytes(d *doc.Doc, block *Block, cfg config.Timeline, newEntry Entry) ([]byte, Position, int) {
 	entries := block.Entries
 	gaps := block.Gaps
 	n := len(entries)
@@ -391,7 +405,7 @@ func insertIntoBlockBytes(d *doc.Doc, block *Block, cfg config.Timeline, newEntr
 	default:
 		pos = PosMiddle
 	}
-	return out, pos
+	return out, pos, j
 }
 
 var reUpdatedLine = regexp.MustCompile(`^([ \t]*)(["']?)(\d{4}-\d{2}-\d{2})?(["']?)(.*)$`)
@@ -418,7 +432,7 @@ func applyTouch(src []byte, d *doc.Doc, key, today string) ([]byte, bool, error)
 			return src, false, nil
 		}
 		existing := m[3]
-		if existing != "" && existing >= today {
+		if existing == today {
 			return src, false, nil
 		}
 		lines[i] = prefix + m[1] + m[2] + today + m[4] + m[5]
@@ -441,29 +455,19 @@ func spliceFrontmatter(src []byte, d *doc.Doc, newFM string) []byte {
 	return out
 }
 
-// locateNewEntryLine reparses final and returns the new entry's 1-based
-// line number, found by Position (first/last entry of the sole block).
-func locateNewEntryLine(final []byte, cfg *config.Config, pos Position, date Date) (int, error) {
+// locateNewEntryLine reparses final and returns the 1-based line of the
+// entry at idx (the new entry's position among the sole block's Entries,
+// computed at insertion time — never by content or date-key matching,
+// which breaks when the new entry shares its date with an existing one).
+func locateNewEntryLine(final []byte, cfg *config.Config, idx int) (int, error) {
 	nd := doc.Parse("", final)
 	page := Parse(nd, cfg.Timeline)
 	if len(page.Blocks) != 1 {
 		return 0, fmt.Errorf("reparse: expected exactly one Timeline block, got %d", len(page.Blocks))
 	}
 	b := page.Blocks[0]
-	if len(b.Entries) == 0 {
-		return 0, fmt.Errorf("reparse: expected at least one entry")
+	if idx < 0 || idx >= len(b.Entries) {
+		return 0, fmt.Errorf("reparse: entry index %d out of range (%d entries)", idx, len(b.Entries))
 	}
-	switch pos {
-	case PosStart:
-		return b.Entries[0].Line, nil
-	case PosEnd, PosNewSection:
-		return b.Entries[len(b.Entries)-1].Line, nil
-	default: // PosMiddle: find the (first) entry with this exact date key
-		for _, e := range b.Entries {
-			if e.Date.Key == date.Key {
-				return e.Line, nil
-			}
-		}
-		return 0, fmt.Errorf("reparse: could not locate the new entry")
-	}
+	return b.Entries[idx].Line, nil
 }
