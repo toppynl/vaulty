@@ -39,11 +39,13 @@ type Result struct {
 }
 
 // CheckPage returns all findings for one parsed page. pageChecks enables
-// PG001/PG002 (path matched lint.page_checks.paths).
-func CheckPage(p *timeline.Page, v *vault.Vault, pageChecks bool) []diag.Diag {
+// PG001/PG002 (path matched lint.page_checks.paths). baseline may be nil
+// (ratchet inactive, DESIGN.md §6.1a).
+func CheckPage(p *timeline.Page, v *vault.Vault, pageChecks bool, baseline *Baseline) []diag.Diag {
 	diags := p.AllDiags()
+	diags = applyRatchet(diags, p.Doc.Path, baseline)
 	if pageChecks {
-		pg := checkPageHygiene(p, v.Config.Lint.PageChecks)
+		pg := checkPageHygiene(p, v.Config.Lint.PageChecks, p.Doc.Path, baseline)
 		for i := range pg {
 			pg[i].Path = p.Doc.Path
 		}
@@ -63,7 +65,7 @@ var (
 	reFence     = regexp.MustCompile("^(```|~~~)")
 )
 
-func checkPageHygiene(p *timeline.Page, pc config.PageChecks) []diag.Diag {
+func checkPageHygiene(p *timeline.Page, pc config.PageChecks, path string, baseline *Baseline) []diag.Diag {
 	var diags []diag.Diag
 	text := string(p.Doc.Src[p.CompiledTruth.Start:p.CompiledTruth.End])
 	lines := strings.Split(text, "\n")
@@ -110,7 +112,7 @@ func checkPageHygiene(p *timeline.Page, pc config.PageChecks) []diag.Diag {
 
 	if tokens := EstimateTokens(len(text)); tokens > pc.CompiledTruthMaxTokens {
 		diags = append(diags, diag.Diag{
-			Code: diag.PG002CompiledTruthSize, Severity: diag.Error, Line: startLine,
+			Code: diag.PG002CompiledTruthSize, Severity: pg002Severity(path, tokens, baseline), Line: startLine,
 			Message: fmt.Sprintf("compiled truth ~%d tokens > %d — move history to Timeline, work to a work file, then compress", tokens, pc.CompiledTruthMaxTokens),
 		})
 	}
@@ -139,23 +141,41 @@ func tableHasKeywordCell(headerLine string, keywords []string) bool {
 	return false
 }
 
+// parseFile reads and parses one vault-relative file.
+func parseFile(v *vault.Vault, rel string) (*timeline.Page, error) {
+	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	src, err := os.ReadFile(full)
+	if err != nil {
+		return nil, err
+	}
+	d := doc.Parse(rel, src)
+	return timeline.Parse(d, v.Config.Timeline), nil
+}
+
 // Run lints the given vault-relative files in the given mode.
 func Run(v *vault.Vault, files []string, opt Options) (*Result, error) {
 	res := &Result{Mode: opt.Mode, Counts: map[diag.Code]int{}}
+	if opt.Mode == ModeVault {
+		// Always present, even at 0 (DESIGN.md §6.3).
+		res.Counts[diag.PG001WorkMaterial] = 0
+		res.Counts[diag.PG002CompiledTruthSize] = 0
+	}
+
+	baselinePath := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
+	baseline, err := LoadBaseline(baselinePath)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, rel := range files {
-		full := filepath.Join(v.Root, filepath.FromSlash(rel))
-		src, err := os.ReadFile(full)
+		p, err := parseFile(v, rel)
 		if err != nil {
 			return nil, err
 		}
 		res.FilesChecked++
 
-		d := doc.Parse(rel, src)
-		p := timeline.Parse(d, v.Config.Timeline)
-
 		pageChecksApply := vault.MatchAny(v.Config.Lint.PageChecks.Paths, rel)
-		all := CheckPage(p, v, pageChecksApply)
+		all := CheckPage(p, v, pageChecksApply, baseline)
 		for i := range all {
 			all[i].Path = rel
 		}

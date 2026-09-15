@@ -26,6 +26,13 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 		return err
 	}
 
+	if o.writeBaseline {
+		if len(args) > 0 || o.changed != "" {
+			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--write-baseline takes no paths/--changed: it always covers the whole vault")}
+		}
+		return a.runWriteBaseline(v)
+	}
+
 	var mode lint.Mode
 	var files []string
 
@@ -59,6 +66,32 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 	if res.Errors > 0 || (o.strict && res.Warnings > 0) {
 		return &ExitError{Code: ExitFindings}
 	}
+	return nil
+}
+
+// runWriteBaseline implements `lint --write-baseline` (DESIGN.md §6.1a):
+// recompute the TL006/TL008/PG002 ratchet baseline over the whole vault and
+// write it to lint.baseline_path.
+func (a *app) runWriteBaseline(v *vault.Vault) error {
+	files, err := v.Walk()
+	if err != nil {
+		return &ExitError{Code: ExitIO, Err: err}
+	}
+	baseline, err := lint.BuildBaseline(v, files)
+	if err != nil {
+		return &ExitError{Code: ExitIO, Err: err}
+	}
+	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
+	if err := lint.SaveBaseline(path, baseline); err != nil {
+		return &ExitError{Code: ExitIO, Err: err}
+	}
+	if a.flags.json {
+		return a.writeJSON(struct {
+			Path  string `json:"path"`
+			Pages int    `json:"pages"`
+		}{v.Config.Lint.BaselinePath, len(baseline.Pages)})
+	}
+	fmt.Fprintf(a.stdout, "wrote baseline %s (%d pages)\n", v.Config.Lint.BaselinePath, len(baseline.Pages))
 	return nil
 }
 

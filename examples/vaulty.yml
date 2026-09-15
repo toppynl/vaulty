@@ -26,3 +26,4 @@ lint:
     table_keywords: [unit, units, step, steps, stap, stappen]  # table header cell first word
     heading_keywords: ["agent log"]  # heading text prefix (case-insensitive)
   severity: {}                  # per-code override, e.g. {TL006: error, TL008: off}
+  baseline_path: .vaulty-baseline.json  # ratchet file (§6.1a); write/update via `lint --write-baseline`
