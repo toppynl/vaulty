@@ -79,11 +79,6 @@ func (a *app) newTimelineReadCmd() *cobra.Command {
 	return cmd
 }
 
-func (a *app) runTimelineRead(o readOpts, page string) error {
-	// TODO(step 4): DESIGN.md §7.
-	return &ExitError{Code: ExitUsage, Err: ErrNotImplemented}
-}
-
 // ---- append -----------------------------------------------------------
 
 type appendOpts struct {
@@ -103,12 +98,12 @@ func (a *app) newTimelineAppendCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&o.touch, "touch", false, "also set frontmatter updated: to today")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the resulting Timeline block, write nothing")
+	// The entry argument starts with "- **DATE**...", which pflag would
+	// otherwise try to parse as a shorthand-flag cluster. Stop flag
+	// scanning at the first positional so flags must precede <page>
+	// "<entry>", never follow it.
+	cmd.Flags().SetInterspersed(false)
 	return cmd
-}
-
-func (a *app) runTimelineAppend(o appendOpts, page, entry string) error {
-	// TODO(step 4): DESIGN.md §8.
-	return &ExitError{Code: ExitUsage, Err: ErrNotImplemented}
 }
 
 // ---- dump (hidden; parity harness) ------------------------------------

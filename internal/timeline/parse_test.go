@@ -14,15 +14,6 @@ func parseSrc(t *testing.T, src string) *Page {
 	return Parse(d, config.Default().Timeline)
 }
 
-func hasCode(diags []diag.Diag, code diag.Code) bool {
-	for _, d := range diags {
-		if d.Code == code {
-			return true
-		}
-	}
-	return false
-}
-
 func countCode(diags []diag.Diag, code diag.Code) int {
 	n := 0
 	for _, d := range diags {

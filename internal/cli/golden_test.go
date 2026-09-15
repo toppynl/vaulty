@@ -80,7 +80,10 @@ func runGoldenCase(t *testing.T, dir string) {
 	for i, a := range args {
 		args[i] = strings.ReplaceAll(a, "{{VAULT}}", tmp)
 	}
-	full := append(append([]string(nil), args...), "--vault", tmp)
+	// --vault goes first: some subcommands (append) disable flag/positional
+	// interspersion because their own positional args start with "-", so a
+	// flag appended after them would be swallowed as a positional instead.
+	full := append([]string{"--vault", tmp}, args...)
 	var stdout, stderr bytes.Buffer
 	exit := Execute("test", full, &stdin, &stdout, &stderr)
 
