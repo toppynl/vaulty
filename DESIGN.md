@@ -1766,19 +1766,27 @@ retry:
   would corrupt the one-line heading format (or, for `--body`, break the
   "single body line" contract §17 promises for entries this command
   writes) on the very next parse;
-- `op` additionally must not contain `|` at all, bare or spaced — even a
-  bare `|` (tolerated when *reading* a legacy entry, §17.1's
-  `decision|update` example) would make an op this command just wrote
-  ambiguous with the heading's real separator on every future parse. This
-  is intentionally stricter than what `Parse` accepts: append is strict,
-  read stays lenient — the same asymmetry Timeline `append`/`lint` already
-  have (§8.1 vs. the ratchet, §6.1a);
-- `body` additionally must not contain a line that (trimmed) starts with
-  `#` — such a line parses as its own `"## [...] ..."` heading once
-  written (or, for any single `#`, at least *looks* like one to a human
-  skimming the file), so a body like `"## [2026-01-02] fake | injected"`
-  would forge a second, unrelated-looking log entry inside the body of the
-  one the caller asked for, rather than staying inside it.
+- `op` additionally must match `^[a-z0-9-]+$` (`vaultlog.opPattern`) —
+  lowercase letters, digits and hyphens only. Stricter than merely banning
+  `|` (an earlier pass at this rule): a bare `|` (tolerated when *reading*
+  a legacy entry, §17.1's `decision|update` example) would make an op this
+  command just wrote ambiguous with the heading's real separator on every
+  future parse, but so would other shapes that aren't pipes at all —
+  `a+b`, `x/y`, `two words` are all refused too, keeping op the short,
+  stable, greppable category it's meant to be. This is intentionally
+  stricter than what `Parse` accepts: append is strict, read stays
+  lenient — the same asymmetry Timeline `append`/`lint` already have
+  (§8.1 vs. the ratchet, §6.1a). Because this is enforced at write time,
+  there's no separate "op looks irregular" lint warning to also maintain —
+  an op written through this command is canonical from the start;
+- `body` additionally must not contain a line that is itself a real ATX
+  heading — `doc.IsATXHeadingLine` (`internal/doc`'s heading grammar,
+  §7: 1-6 `#`'s then a space or end of line), not merely "starts with
+  `#`". A body like `"## [2026-01-02] fake | injected"` (or a bare `"#
+  fake"`) would forge a second, unrelated-looking log entry inside the
+  body of the one the caller asked for, rather than staying inside it —
+  but an issue reference like `"#123 fixed"` isn't a heading (no space
+  after the `#`s) and is fine as body text.
 
 A validation failure exits 3 (refused — same code timeline `append` uses
 for `ValidateEntry` failures, §8.1) and writes nothing.
@@ -1848,26 +1856,34 @@ Reports two independent kinds of finding, both from one parse of the log
 file:
 
 - **malformed headings** (`vaultlog.Parse`'s `Malformed`, §17.1) — a
-  format defect;
+  format defect, and the only thing that fails the exit code (below);
 - **out-of-order entries** (`vaultlog.FindOutOfOrder`, §17.1) — a
   well-formed entry whose date is earlier than the one before it in the
-  file. Expected to fire occasionally on the real vault's history (§17);
-  this is a warning about file/date order, never treated as corruption or
-  folded into `Malformed`.
+  file. This is a **warning only, with no exit-code effect**: the real
+  vault's `log.md` has ~41 of these in its legitimate append-only
+  history (entries added by hand or other tooling over time, not a
+  defect — §17), so treating it as a failure would leave `log lint`
+  permanently red there with nothing to actually fix. It's still
+  reported — worth knowing about, e.g. before trusting file order for
+  something — just never fatal, and never folded into `Malformed`.
 
 Human mode, one line per finding on stdout: malformed as `<path>:<line>:
 malformed: <reason>: <text>` (mirroring `timeline lint`'s `path:line: CODE
-severity: message` shape, §6.3); out-of-order as `<path>:<line>:
+severity: message` shape, §6.3); out-of-order as `<path>:<line>: warning
 out-of-order: entry dated <date> appears after <prev_date> (line
-<prev_line>)`. `--json`: `{"path":...,
+<prev_line>)` (the `warning` token makes the exit-code asymmetry legible
+in the output itself, not just in this doc). `--json`: `{"path":...,
 "malformed":[{"line":...,"reason":...,"text":...}],
-"out_of_order":[{"line":...,"date":...,"prev_line":...,"prev_date":...}]}`.
+"out_of_order":[{"line":...,"date":...,"prev_line":...,"prev_date":...}]}`
+— two separate arrays for the same reason: a consumer that only cares
+about real defects can ignore `out_of_order` entirely.
 
-Exit 1 if either list is non-empty (`ExitFindings`, same convention as
-`timeline lint`), exit 0 otherwise — including when the file doesn't exist
-yet. A separate subcommand rather than folding this into `log last`
-because `last`'s job is best-effort reading (never fail the read over data
-quality — it already corrects for out-of-order dates itself, §17.3) while
-`lint`'s job is exactly the opposite: surface every finding as the primary
-result, for a periodic vault-health pass (alongside `timeline lint`)
-rather than every `log last` call.
+Exit 1 only if `malformed` is non-empty (`ExitFindings`, same convention
+as `timeline lint`); exit 0 otherwise, `out_of_order` findings included —
+including when the file doesn't exist yet. A separate subcommand rather
+than folding this into `log last` because `last`'s job is best-effort
+reading (never fail the read over data quality — it already corrects for
+out-of-order dates itself, §17.3) while `lint`'s job is exactly the
+opposite: surface every finding as the primary result, for a periodic
+vault-health pass (alongside `timeline lint`) rather than every `log
+last` call.
