@@ -107,6 +107,17 @@ func fenceOf(trimmed string) (string, bool) {
 	return "", false
 }
 
+// IsATXHeadingLine reports whether line is a real ATX heading — 1-6 '#'s,
+// then a space or end of line (not merely a line starting with '#': "#123
+// fixed" is not a heading, "# fixed" is). Exported for callers outside
+// this package that need to reject something because it would be read
+// back as a heading (e.g. vaultlog.ValidateField, DESIGN.md §17.2), so the
+// heading grammar has exactly one implementation.
+func IsATXHeadingLine(line string) bool {
+	_, _, ok := parseATX(line)
+	return ok
+}
+
 // parseATX parses one ATX heading line: 1-6 '#', then a space (or EOL),
 // then the (trimmed) text. Up to 3 leading spaces are allowed per
 // CommonMark; more than 3 removes it from consideration (indented code).
