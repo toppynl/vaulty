@@ -57,7 +57,7 @@ func (a *app) newLogLastCmd() *cobra.Command {
 			return a.runLogLast(o)
 		},
 	}
-	cmd.Flags().IntVar(&o.n, "n", 10, "number of entries to print (0 = all)")
+	cmd.Flags().IntVarP(&o.n, "n", "n", 10, "number of entries to print (0 = all)")
 	cmd.Flags().StringVar(&o.op, "op", "", "only entries with this exact op")
 	cmd.Flags().StringVar(&o.since, "since", "", "only entries on or after YYYY-MM-DD or YYYY-MM")
 	return cmd

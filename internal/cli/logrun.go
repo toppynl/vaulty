@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/toppynl/vaulty/internal/name"
@@ -25,6 +28,9 @@ func (a *app) runLogAppend(o logAppendOpts, op, title string) error {
 		return &ExitError{Code: ExitUsage, Err: derr}
 	}
 
+	op = strings.TrimSpace(op)
+	title = strings.TrimSpace(title)
+
 	if err := vaultlog.ValidateField("op", op); err != nil {
 		return &ExitError{Code: ExitRefused, Err: err}
 	}
@@ -37,24 +43,13 @@ func (a *app) runLogAppend(o logAppendOpts, op, title string) error {
 		}
 	}
 
-	orig, err := os.ReadFile(full)
-	if err != nil && !os.IsNotExist(err) {
-		return &ExitError{Code: ExitIO, Err: err}
-	}
-
-	next := vaultlog.Append(orig, date, op, title, o.body)
-
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
-	if err := atomicWrite(full, next); err != nil {
-		return &ExitError{Code: ExitIO, Err: err}
-	}
 
-	entries, _ := vaultlog.Parse(next)
-	line := 0
-	if len(entries) > 0 {
-		line = entries[len(entries)-1].Line
+	line, err := appendLogEntry(full, date, op, title, o.body)
+	if err != nil {
+		return &ExitError{Code: ExitIO, Err: err}
 	}
 
 	if a.flags.json {
@@ -68,6 +63,65 @@ func (a *app) runLogAppend(o logAppendOpts, op, title string) error {
 	}
 	fmt.Fprintf(a.stdout, "appended %s:%d\n", rel, line)
 	return nil
+}
+
+// appendLogEntry adds one entry to full under an exclusive lock, writing
+// only the new bytes (via WriteAt at the file's current end) — an
+// existing entry's bytes are never read back and rewritten, so a crash
+// mid-write can only corrupt the entry being added, never history already
+// on disk. The lock also serializes concurrent appenders (two processes
+// racing to append would otherwise both compute the same end offset and
+// clobber each other) and, because nothing is renamed over the path, a
+// log.md that's a symlink stays a symlink (DESIGN.md §16.2).
+func appendLogEntry(full, date, op, title, body string) (line int, err error) {
+	f, err := os.OpenFile(full, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return 0, err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+
+	orig, err := readAllAt(f)
+	if err != nil {
+		return 0, err
+	}
+
+	sep := vaultlog.SeparatorFor(orig)
+	suffix := []byte(sep + vaultlog.Format(date, op, title, body))
+	if _, err := f.WriteAt(suffix, int64(len(orig))); err != nil {
+		return 0, err
+	}
+
+	// The new heading's line number: every '\n' already in orig, plus every
+	// '\n' in the separator that precedes the heading, plus one (1-based).
+	// Cheaper than re-reading/re-parsing the file after the write, and
+	// exact — see the derivation in DESIGN.md §16.2.
+	line = bytes.Count(orig, []byte("\n")) + strings.Count(sep, "\n") + 1
+	return line, nil
+}
+
+// readAllAt reads f's entire current content via ReadAt (not Read), so it
+// doesn't disturb f's file offset — appendLogEntry only ever positions via
+// WriteAt, never Seek, keeping the "one exclusive lock, one read, one
+// targeted write" sequence simple to reason about.
+func readAllAt(f *os.File) ([]byte, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	if size == 0 {
+		return nil, nil
+	}
+	buf := make([]byte, size)
+	if _, err := f.ReadAt(buf, 0); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
 
 func (a *app) runLogLast(o logLastOpts) error {
@@ -112,6 +166,12 @@ func (a *app) runLogLast(o logLastOpts) error {
 		}
 		filtered = append(filtered, e)
 	}
+	// File order is not reliably chronological (the real vault's log.md has
+	// entries added out of date order by hand/other tooling) — sort by
+	// date before taking the tail, so "last N" means "N most recent by
+	// date", stably keeping file order among entries sharing a date
+	// (DESIGN.md §16.3).
+	filtered = vaultlog.SortByDate(filtered)
 	if o.n > 0 && len(filtered) > o.n {
 		filtered = filtered[len(filtered)-o.n:]
 	}
@@ -162,7 +222,8 @@ func (a *app) runLogLint() error {
 			return &ExitError{Code: ExitIO, Err: err}
 		}
 	}
-	_, malformed := vaultlog.Parse(src)
+	entries, malformed := vaultlog.Parse(src)
+	outOfOrder := vaultlog.FindOutOfOrder(entries)
 
 	if a.flags.json {
 		type malformedJSON struct {
@@ -170,15 +231,28 @@ func (a *app) runLogLint() error {
 			Reason string `json:"reason"`
 			Text   string `json:"text"`
 		}
+		type outOfOrderJSON struct {
+			Line     int    `json:"line"`
+			Date     string `json:"date"`
+			PrevLine int    `json:"prev_line"`
+			PrevDate string `json:"prev_date"`
+		}
 		out := struct {
-			Path      string          `json:"path"`
-			Malformed []malformedJSON `json:"malformed"`
+			Path       string           `json:"path"`
+			Malformed  []malformedJSON  `json:"malformed"`
+			OutOfOrder []outOfOrderJSON `json:"out_of_order"`
 		}{Path: rel}
 		for _, m := range malformed {
 			out.Malformed = append(out.Malformed, malformedJSON{Line: m.Line, Reason: m.Reason, Text: m.Text})
 		}
 		if out.Malformed == nil {
 			out.Malformed = []malformedJSON{}
+		}
+		for _, w := range outOfOrder {
+			out.OutOfOrder = append(out.OutOfOrder, outOfOrderJSON{Line: w.Line, Date: w.Date, PrevLine: w.PrevLine, PrevDate: w.PrevDate})
+		}
+		if out.OutOfOrder == nil {
+			out.OutOfOrder = []outOfOrderJSON{}
 		}
 		if err := a.writeJSON(out); err != nil {
 			return err
@@ -187,8 +261,11 @@ func (a *app) runLogLint() error {
 		for _, m := range malformed {
 			fmt.Fprintf(a.stdout, "%s:%d: malformed: %s: %s\n", rel, m.Line, m.Reason, m.Text)
 		}
+		for _, w := range outOfOrder {
+			fmt.Fprintf(a.stdout, "%s:%d: out-of-order: entry dated %s appears after %s (line %d)\n", rel, w.Line, w.Date, w.PrevDate, w.PrevLine)
+		}
 	}
-	if len(malformed) > 0 {
+	if len(malformed) > 0 || len(outOfOrder) > 0 {
 		return &ExitError{Code: ExitFindings, Err: nil}
 	}
 	return nil

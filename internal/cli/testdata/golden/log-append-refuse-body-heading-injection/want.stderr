@@ -1,0 +1,1 @@
+vaulty: body must not contain a line starting with "#" (would be read as a heading)
