@@ -55,6 +55,24 @@ type Lint struct {
 	// layer (now/tracking/**) without ever feeding those findings into the
 	// ratchet baseline.
 	Overrides []Override `yaml:"overrides" json:"overrides"`
+	// Shard configures the SH* hub/child checks (DESIGN.md §16). Empty
+	// TypeDirs disables every SH check (no vault uses the sharding
+	// convention).
+	Shard Shard `yaml:"shard" json:"shard"`
+}
+
+// Shard identifies which directories are "type folders" whose immediate
+// subdirectories are candidate hub directories, e.g. "wiki/*" matches
+// wiki/systems, wiki/vendors, ... so that wiki/systems/<hub>/ is a hub
+// directory but wiki/systems/<page>.md (a plain, unsharded page) is not
+// mistaken for one. Matching uses the same glob rules as everywhere else
+// (vault.MatchAny): a directory D is a hub-directory candidate when
+// path.Dir(D) matches one of TypeDirs. This makes "what counts as a shard"
+// robust against the vault's own directory conventions (now/tracking/,
+// archive/, a vault with no shards at all) instead of hard-coding a fixed
+// depth or a single directory name.
+type Shard struct {
+	TypeDirs []string `yaml:"type_dirs" json:"type_dirs"`
 }
 
 // Override is one glob-scoped exemption (DESIGN.md §6.1a). Severity works
@@ -99,6 +117,7 @@ func Default() *Config {
 			},
 			Severity:     map[string]string{},
 			BaselinePath: ".vaulty-baseline.json",
+			Shard:        Shard{TypeDirs: []string{"wiki/*"}},
 		},
 	}
 }

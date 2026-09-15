@@ -18,7 +18,7 @@ vault's Claude Code setup (hook, permission allowlist, skill snippets).
 ## Usage
 
 ```bash
-vaulty timeline lint [paths...]         # check format + page hygiene
+vaulty timeline lint [paths...]         # check format + page hygiene + shard hygiene (SH*, DESIGN.md §16)
 vaulty timeline lint --write-baseline   # recompute the TL006/TL008/PG002 ratchet baseline
 vaulty timeline read <page> [--timeline] [--since D] [--last N]
 vaulty timeline append <page> "- **YYYY-MM-DD** | source — what" [--touch] [--dry-run]
