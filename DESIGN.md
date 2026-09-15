@@ -589,8 +589,11 @@ applies the higher value instead of refusing it, still reports every
 increase on stderr (`... : accepted`), and exits 0. This is a human review
 decision — something the CLI reports clearly (the baseline file's diff, plus
 the stderr lines), not something an agent should ever pass on its own
-judgment; agents run `--write-baseline` bare, only a person runs it with
-`--accept-growth`.
+judgment; the flag's own TTY gate (below) enforces that mechanically. Bare
+`--write-baseline` (shrink-only) has no such gate at the CLI level — it's
+safe to let an agent run — but the vault-level operational policy is
+stricter still: docs/claude-code.md §8d has agents run neither flag at all,
+fixing the flagged page or asking Peep instead.
 
 **Peep's decision (2026-09-15), hardening the two bypasses above:**
 
@@ -627,6 +630,20 @@ judgment; agents run `--write-baseline` bare, only a person runs it with
    logic can be exercised without a real terminal while still proving the
    gate refuses by default (a `bytes.Buffer` stdin, which the golden
    harness always uses, is never a TTY).
+
+**Pre-commit backstop: `lint --check-baseline`.** Peep's decision
+(2026-09-15, hardening round 3): this vaulty-level hardening only ever
+catches a bypass that goes through `--write-baseline` itself. It cannot
+stop a commit that hand-edits `.vaulty-baseline.json` directly and skips
+the CLI entirely (a sloppy agent, not a malicious one — see
+docs/claude-code.md §8 for the threat model this is scoped to).
+`--check-baseline` is a read-only companion to `--write-baseline`: it reads
+the baseline on disk and the one committed at HEAD, using the exact same
+`resolveWriteBaselineOld` (so it shares every HEAD-resolution and
+submap-safety fix `--write-baseline` has), and exits `ExitFindings` if the
+disk copy is higher on any page/code — without writing anything. Meant to
+run from a `pre-commit` hook, after staging, as the cheap independent
+second check docs/claude-code.md §8c recommends.
 
 A page with zero TL006/TL008 findings and no PG002-over-max finding gets no
 entry at all (adding one would be a no-op: an absent page's implicit `{0,0,0}`
@@ -706,6 +723,7 @@ MAX — move history to Timeline, work to a work file, then compress".
 | `lint --changed[=REF]` (default `main`) | files | union of `git diff --name-only --diff-filter=AMR REF...HEAD`, `git diff --name-only HEAD`, `git ls-files --others --exclude-standard`; kept if `.md`, under `config.dirs`, not excluded, and still existing | findings, error |
 | `lint --hook` | files (hook) | one file from stdin JSON (§6.4) | findings, error |
 | `lint --write-baseline` | n/a (recompute + write, then exit) | `Walk(config.dirs)`, always the whole vault | writes `lint.baseline_path` (§6.1a), shrink-only unless `--accept-growth`; no findings printed |
+| `lint --check-baseline` | n/a (read-only, then exit) | reads `lint.baseline_path` on disk and at HEAD only, no `Walk` | never writes; exits `ExitFindings` if the on-disk baseline is higher than HEAD's (§6.1a "Pre-commit backstop") |
 
 Explicit file arguments may lie outside `page_checks.paths`; such files only
 get TL checks. `--changed` with an unknown ref, or run outside git, exits 2.

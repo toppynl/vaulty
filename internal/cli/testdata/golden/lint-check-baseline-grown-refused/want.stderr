@@ -1,0 +1,1 @@
+vaulty: .vaulty-baseline.json on disk has wiki/a.md TL006=9, higher than 1 committed at HEAD: revert manual edits to the baseline before writing it

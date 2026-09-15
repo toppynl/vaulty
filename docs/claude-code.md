@@ -58,10 +58,12 @@ git add .vaulty-baseline.json && git commit -m "add ratchet baseline"
 From then on, `--write-baseline` is shrink-only by default: it tightens
 pages that improved but refuses to raise a page's baselined debt, so a
 skill or agent blocked by the hook cannot use its `Bash(vaulty:*)`
-permission to rewrite the baseline around the block. Only `--accept-growth`
-raises it, and that flag is a human-only decision — skills and agents run
-`vaulty timeline lint --write-baseline` bare, never with `--accept-growth`;
-a person runs that explicitly, after reviewing the growth it reports.
+permission to rewrite the baseline around the block. Both flags are a
+human-only decision (§8d): a skill or agent blocked by the ratchet fixes
+the flagged page, or asks Peep — it never runs `--write-baseline` (bare or
+with `--accept-growth`) itself. A person runs `--write-baseline` bare
+periodically to tighten the baseline after real improvements, and
+`--accept-growth` explicitly, after reviewing the growth it reports.
 
 ```json
 {
@@ -155,15 +157,34 @@ needs today.
 ## 8. Hardening for agent-driven vaults
 
 An agent vault gives its own sessions broad `Bash(vaulty:*)` access, which
-makes two files worth protecting explicitly: `.vaulty-baseline.json` (the
-ratchet — DESIGN.md §6.1a) and `.vaulty.yml` (severity/overrides/paths
-config). vaulty itself closes the `--write-baseline`/`--accept-growth`
-bypasses at the CLI level (DESIGN.md §6.1a, Peep's 2026-09-15 decision);
-the snippets below add defense in depth around it. They are documentation
-only — none of this ships inside a vault from this repo.
+makes a few files worth protecting explicitly: `.vaulty-baseline.json` (the
+ratchet — DESIGN.md §6.1a), `.vaulty.yml` (severity/overrides/paths config),
+and `.claude/settings*.json` (the permissions/hooks below live there — an
+agent that can rewrite its own settings can undo all of this). vaulty
+itself closes the `--write-baseline`/`--accept-growth` bypasses at the CLI
+level (DESIGN.md §6.1a, Peep's 2026-09-15 decisions); the snippets below add
+defense in depth around it. They are documentation only — none of this
+ships inside a vault from this repo.
 
-**(a) Deny Edit/Write on the ratchet files.** Belt-and-suspenders against a
-skill or agent editing either file directly instead of through the CLI
+**Threat model (Peep's decision, 2026-09-15, hardening round 3).** This
+section hardens against a *sloppy* agent — one that runs `rm
+.vaulty-baseline.json` while cleaning something up, hand-edits the file
+while "fixing" a lint failure, or reaches for `--write-baseline
+--accept-growth` because it's blocked and that flag is right there. It does
+**not** try to hold against a genuinely adversarial agent, and deliberately
+does not attempt a `PreToolUse` Bash-command guard (regex-matching
+`rm`/`mv`/`>`/`tee` against the command string) to get closer to that: a CLI
+running inside a real shell has a pty, `tmux`, `script`, a heredoc, a
+wrapper alias, or a second shell one `bash -c` away from any regex a hook
+can write — closing one phrasing just moves the bypass to the next one,
+while the regex itself keeps producing false positives on legitimate
+commands that happen to contain `rm`, `>` or `tee` as a substring. The
+backstops below (deny-listed files, and a check that runs *after* whatever
+Bash did, not by pattern-matching what it typed) hold regardless of which
+shell trick got there.
+
+**(a) Deny Edit/Write on the protected files.** Belt-and-suspenders against
+a skill or agent editing any of them directly instead of through the CLI
 (`.claude/settings.json`, `permissions.deny`):
 
 ```json
@@ -173,58 +194,41 @@ skill or agent editing either file directly instead of through the CLI
       "Edit(.vaulty-baseline.json)",
       "Write(.vaulty-baseline.json)",
       "Edit(.vaulty.yml)",
-      "Write(.vaulty.yml)"
+      "Write(.vaulty.yml)",
+      "Edit(.claude/settings*.json)",
+      "Write(.claude/settings*.json)"
     ]
   }
 }
 ```
 
-**(b) `PreToolUse` hook refusing risky Bash commands.** Blocks a `Bash`
-invocation that names `accept-growth`, or that touches either file via
-`rm`, `mv`, `>` or `tee` — the ways to remove or rewrite them outside the
-CLI's own safeguards:
+**(b) No `Bash` command-pattern guard, on purpose.** See the threat model
+above — a regex `PreToolUse` hook over `Bash` commands was tried and
+dropped: a pty/tmux/heredoc detour defeats it trivially, and false
+positives on ordinary commands cost more than the coverage is worth. (a)'s
+deny-list plus (c)'s after-the-fact check give the same protection against
+the sloppiness this is actually scoped to, without either problem.
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -c \"import json,sys,re; d=json.load(sys.stdin); cmd=d.get('tool_input',{}).get('command',''); pat=r'accept-growth|(rm|mv|>|tee)[^&|;]*(\\\\.vaulty-baseline\\\\.json|\\\\.vaulty\\\\.yml)'; sys.exit(2) if re.search(pat, cmd) else sys.exit(0)\""
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Exit 2 from a `PreToolUse` hook blocks the tool call and feeds the message
-back to the agent (same convention as the `--hook` lint mode, §3).
-
-**(c) Optional pre-commit check: baseline never rises versus HEAD.** Since
-`resolveWriteBaselineOld` already diffs against HEAD (DESIGN.md §6.1a),
-this is redundant with the CLI's own refusal — but a cheap, independent
-second line of defense for a commit that somehow bypassed it (e.g. a
-hand-edited commit, not `--write-baseline` at all):
+**(c) Pre-commit backstop (recommended): `vaulty timeline lint
+--check-baseline`.** This is the actual second line of defense: read-only,
+runs after whatever a Bash command did, and refuses if
+`.vaulty-baseline.json` on disk is higher on any page/code than the one
+committed at HEAD — regardless of how it got there (a bypassed
+`--write-baseline`, a hand-edit, `rm` + a fresh recompute, an override that
+happened to zero out a stale entry the wrong way). It shares
+`resolveWriteBaselineOld` with `--write-baseline` itself (DESIGN.md §6.1a),
+so the two can never disagree about what counts as growth:
 
 ```bash
 #!/bin/sh
 # .git/hooks/pre-commit (or wire into an existing pre-commit runner)
 git diff --cached --name-only | grep -qx '.vaulty-baseline.json' || exit 0
-git show HEAD:.vaulty-baseline.json > /tmp/vaulty-baseline-head.json 2>/dev/null || exit 0
-python3 -c "
-import json, sys
-old = json.load(open('/tmp/vaulty-baseline-head.json'))['pages']
-new = json.load(open('.vaulty-baseline.json'))['pages']
-for path, entry in new.items():
-    base = old.get(path, {'tl006': 0, 'tl008': 0, 'pg002_tokens': 0})
-    for code in ('tl006', 'tl008', 'pg002_tokens'):
-        if entry.get(code, 0) > base.get(code, 0):
-            print(f'{path} {code} would rise {base.get(code, 0)} -> {entry.get(code, 0)}')
-            sys.exit(1)
-"
+vaulty timeline lint --check-baseline
 ```
+
+**(d) Skill-docs rule: agents never run `--write-baseline` or
+`--accept-growth`.** Any skill or CLAUDE.md instructing an agent to use
+`vaulty` must say so explicitly — writing the baseline (shrink or growth)
+is a human review action (DESIGN.md §6.1a); an agent that hits a ratchet
+error fixes the underlying page or asks Peep, it does not reach for either
+flag to make the check pass.

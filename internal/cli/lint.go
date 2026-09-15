@@ -28,6 +28,15 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 		return err
 	}
 
+	if o.checkBaseline {
+		if len(args) > 0 || o.changed != "" {
+			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--check-baseline takes no paths/--changed: it always covers the whole vault")}
+		}
+		if o.writeBaseline {
+			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--check-baseline and --write-baseline are mutually exclusive")}
+		}
+		return a.runCheckBaseline(v)
+	}
 	if o.writeBaseline {
 		if len(args) > 0 || o.changed != "" {
 			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--write-baseline takes no paths/--changed: it always covers the whole vault")}
@@ -149,6 +158,25 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 	if !acceptGrowth && len(growth) > 0 {
 		return &ExitError{Code: ExitFindings}
 	}
+	return nil
+}
+
+// runCheckBaseline implements `lint --check-baseline` (DESIGN.md §6.1a,
+// docs/claude-code.md §8c): a read-only pre-commit backstop that reports
+// whether the ratchet baseline on disk has grown versus the one committed
+// at HEAD, without writing anything. It exists because the CLI's own
+// `--write-baseline` guard only helps when growth actually goes through
+// that command — a hand-edited commit that touches `.vaulty-baseline.json`
+// directly bypasses it entirely. Reuses resolveWriteBaselineOld exactly as
+// --write-baseline does (same HEAD resolution, same submap-safety, same
+// "missing on disk"/"exceeds HEAD" refusals), so both commands can never
+// disagree about what counts as growth.
+func (a *app) runCheckBaseline(v *vault.Vault) error {
+	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
+	if _, err := resolveWriteBaselineOld(v, path); err != nil {
+		return &ExitError{Code: ExitFindings, Err: err}
+	}
+	fmt.Fprintf(a.stdout, "%s: baseline check: no growth vs HEAD\n", name.Binary)
 	return nil
 }
 

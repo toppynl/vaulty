@@ -26,6 +26,7 @@ type lintOpts struct {
 	warnings      bool   // print warnings in human mode
 	writeBaseline bool   // recompute and write the ratchet baseline (DESIGN.md §6.1a)
 	acceptGrowth  bool   // with --write-baseline: allow raising a page's baselined debt
+	checkBaseline bool   // read-only: refuse if the on-disk baseline grew vs HEAD (pre-commit backstop)
 }
 
 func (a *app) newTimelineLintCmd() *cobra.Command {
@@ -44,6 +45,7 @@ func (a *app) newTimelineLintCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&o.warnings, "warnings", false, "also print warnings in human mode")
 	cmd.Flags().BoolVar(&o.writeBaseline, "write-baseline", false, "recompute the TL006/TL008/PG002 ratchet baseline over the whole vault and write it, then exit (shrink only by default; see --accept-growth)")
 	cmd.Flags().BoolVar(&o.acceptGrowth, "accept-growth", false, "with --write-baseline, also accept pages whose debt grew (a human decision — never run by an agent)")
+	cmd.Flags().BoolVar(&o.checkBaseline, "check-baseline", false, "read-only: fail if the on-disk ratchet baseline is higher than the one committed at HEAD (pre-commit backstop; never writes)")
 	return cmd
 }
 
