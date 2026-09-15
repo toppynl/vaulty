@@ -46,6 +46,23 @@ Add to the vault's `.claude/settings.json` (`permissions.allow`):
 
 ## 3. PostToolUse hook (touched-page enforcement)
 
+Before wiring the hook, create the ratchet baseline once (DESIGN.md §6.1a) —
+without `.vaulty-baseline.json` the ratchet is inactive and PG002 blocks
+every oversized legacy page unconditionally, not just growth:
+
+```bash
+vaulty timeline lint --write-baseline
+git add .vaulty-baseline.json && git commit -m "add ratchet baseline"
+```
+
+From then on, `--write-baseline` is shrink-only by default: it tightens
+pages that improved but refuses to raise a page's baselined debt, so a
+skill or agent blocked by the hook cannot use its `Bash(vaulty:*)`
+permission to rewrite the baseline around the block. Only `--accept-growth`
+raises it, and that flag is a human-only decision — skills and agents run
+`vaulty timeline lint --write-baseline` bare, never with `--accept-growth`;
+a person runs that explicitly, after reviewing the growth it reports.
+
 ```json
 {
   "hooks": {
