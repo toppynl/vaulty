@@ -1416,3 +1416,144 @@ creating the GitHub remote, and adding commands beyond §3.1.
   section like the main vault's, rather than staying convention-free. This
   is a change to `me-template`'s own templates, not to this binary — the
   built-in defaults (§4.1) already handle it with no config needed.
+
+---
+
+## 16. Shard lint checks (SH001-SH005)
+
+Hosted in `vaulty timeline lint` (there is no standalone `vaulty lint` yet —
+§3.1 reserves that name; PG001/PG002 already set the precedent of hosting a
+non-Timeline hygiene check here rather than waiting for the umbrella
+command). Implemented in `internal/lint/shard.go`; codes in
+`internal/diag/diag.go`.
+
+### 16.1 The convention these checks enforce
+
+The ingest skill's "Sharding" section (`.claude/skills/ingest/SKILL.md`):
+when a page's compiled truth above the divider outgrows ~3k tokens and has
+genuinely separable parts, it splits into a **hub** `wiki/<type>/<x>.md`
+(short, current state, one line + link per child; `## Timeline` stays here)
+plus **children** `wiki/<type>/<x>/<x>-<part>.md` (flat frontmatter, hub
+named in `related:`, each under the token budget, no `## Timeline` of their
+own). Example: `wiki/systems/bluestone-api-integratie.md` plus
+`wiki/systems/bluestone-api-integratie/*.md`.
+
+### 16.2 What counts as a hub directory
+
+Not every subdirectory in the vault is a shard — `now/tracking/` is a
+work-file layer, `archive/` holds superseded pages, and a vault might have
+no shards at all. `lint.shard.type_dirs` (default `["wiki/*"]`) names the
+*type* folders (`wiki/systems`, `wiki/vendors`, ...) whose immediate
+subdirectories are hub-directory candidates: a directory `D` is a
+hub-directory candidate iff `path.Dir(D)` matches one of `type_dirs`
+(`vault.MatchAny`, the same glob rules as everywhere else). This is
+deliberately the only place "what counts as a shard" is decided
+(`lint.IsHubDirCandidate`), so a vault with a different layout — or none of
+this convention at all (`type_dirs: []` disables every SH check) —
+configures it instead of the binary hard-coding a fixed depth or name. A
+page's own directory being a hub-directory candidate is also how a page is
+recognized as a *child* (§16.4): `wiki/systems/x.md` itself never qualifies,
+because `path.Dir("wiki/systems")` is `"wiki"`, which `"wiki/*"` does not
+match.
+
+### 16.3 Checks and severities
+
+| code | what | severity | scope |
+|---|---|---|---|
+| SH001 | a hub-directory candidate has no sibling hub page `<x>.md` | error | hub directory |
+| SH002 | a child's frontmatter `related:` does not list its hub | error | child page |
+| SH003 | a hub page does not link one of its children (`[[child]]` anywhere in the hub file, frontmatter or body) | error | hub page |
+| SH004 | a child's compiled truth exceeds `lint.page_checks.compiled_truth_max_tokens` (the same estimate/threshold as PG002) | error | child page |
+| SH005 | a child page carries its own `## Timeline` | error | child page |
+
+All five are always full findings in both files and vault mode — unlike
+PG001/PG002 they are not expected to be noisy at vault scale (one hit per
+broken shard, not per legacy page), so there is no vault-mode count
+collapse and no SH-specific baseline ratchet: the sharding convention is
+new enough that there is no legacy debt to grandfather, unlike PG002's
+oversized pages that predate the 3k-token rule. SH004 is the one exception,
+in severity only — see "SH004 vs. PG002" below.
+
+**SH004 vs. PG002.** Both apply the identical token estimate and default
+threshold to the same compiled-truth span, and both fire on an oversized
+child under the default config (`wiki/**` is in both `page_checks.paths`
+and matches a hub-directory candidate's child). This is intentional
+duplication, not a bug: PG002 is the generic "this page has outgrown a
+single page" signal (its fix could be *shard it*), while SH004 is the
+shard-specific signal that a page *already inside* a shard needs to split
+further or shed history/work — a different next action worth its own line.
+`lint.severity: {SH004: off}` turns off the shard-specific one for a vault
+that finds it redundant with PG002.
+
+Because the two measure the exact same number for the exact same page,
+SH004's *severity* follows PG002's existing ratchet rather than keeping a
+second, SH-specific one: `checkShardChild` reads the page's baselined
+`pg002_tokens` (via the same `pg002Severity` PG002 itself calls) and
+downgrades SH004 to a warning under the identical condition — tokens at or
+below the baselined value. SH004 never writes its own baseline entry
+(`--write-baseline` only ever records `pg002_tokens`, driven by PG002's
+own `page_checks.paths` match); it only reads the one PG002 already
+maintains. Without a baseline (ratchet inactive) or without an entry for
+that page (never accepted as oversized), SH004 is an error, same as
+before. This keeps a child that's already been accepted as oversized via
+`--write-baseline` from flipping back to an error — and a `--hook` exit
+2 — purely because SH004 restates a number PG002 already downgraded.
+
+`lint.severity` and the per-path `severity` half of `lint.overrides` apply
+to SH001-SH005 exactly as they do to every other code (both are generic
+over `diag.Code`, requiring no SH-specific plumbing). The `ratchet` half of
+`lint.overrides` has no effect on SH001-SH005: they are never ratcheted, so
+there is nothing to exempt.
+
+### 16.4 `lint <path>`, `--changed`, `--hook`
+
+- **Child-level checks (SH002, SH004, SH005)** need no I/O beyond the page
+  already being linted: `internal/lint.checkShardChild` runs inside the
+  normal per-file `CheckPage` pass, so they appear for exactly the files a
+  given `lint` invocation already covers — a single `--hook` file, a
+  `--changed` list, an explicit `lint <path>`, or a full vault walk — with
+  no extra scoping logic.
+- **Hub-level checks (SH001, SH003)** need a directory listing (is there a
+  sibling hub file; does the hub link every file physically present in the
+  directory), so they run once per `Run()` call via
+  `internal/lint.CheckShardDirs(v, files)` rather than inside the per-file
+  loop. `files` is exactly the file list that call already resolved (whole
+  vault, a directory subset, explicit files, `--changed`, or the one
+  `--hook` file) — a hub directory's findings are kept only when that scope
+  *touches* it: its hub file, or at least one of its children, is in
+  `files`. This makes `vaulty timeline lint wiki/systems/x.md` or a
+  `--hook` run on one child feel exactly as scoped as every other check,
+  instead of a single-file lint suddenly reporting on hub directories
+  elsewhere in the vault. A hub directory's children, for this check, are
+  whatever `.md` files sit directly in it *on disk* — not filtered to
+  `files` — since SH001/SH003 are about the directory's actual shape, not
+  about which of its files happen to be part of the current lint run.
+- `lint --write-baseline` / `--check-baseline` are unaffected: SH001-SH005
+  carry no baseline entries of their own (§16.3) — SH004 reads PG002's
+  entry for the same page at check time, but nothing about
+  `--write-baseline`/`--check-baseline` itself changes for SH004.
+- A hub-level finding (SH003) reached only through a child in scope — the
+  hub file itself is not among `files`, only one of its children is —
+  names that child in the message (`... (via child <path>)`), so a
+  `--hook`/`--changed` run on one child doesn't read as an unprompted hit
+  on an unrelated hub file.
+
+### 16.5 Link-target normalization (SH002/SH003)
+
+SH002 (does a child's `related:` name its hub) and SH003 (does the hub
+link each child) both compare `[[...]]` wikilink targets against a plain
+page name, but a real link can spell that target several ways: an
+escaped-pipe alias inside a markdown table cell (`[[x\|alias]]` — the pipe
+is escaped so it doesn't end the table cell, which otherwise leaves a
+trailing backslash on the captured target), a path-form link
+(`[[type/hub/x]]`), an explicit `.md` suffix (`[[x.md]]`), or different
+casing (`[[X]]`). `internal/lint.normalizeWikilinkTarget` is the single
+place that collapses all four to the same bare, lowercase name; both
+`wikilinkTargets` (SH003, hub → children) and `relatedListsHub` (SH002,
+child → hub) go through it, so the two directions can never disagree on
+what counts as the same link. `relatedField`'s own scan (finding the
+`related:` block in frontmatter) additionally treats a column-0 `- ` YAML
+list item as part of the block, not just indented or blank continuation
+lines — `related:` followed by an unindented list is valid YAML — and
+matches the `related:` key itself exactly (not `related_extra:` or any
+other key sharing the prefix).

@@ -76,6 +76,11 @@ func CheckPage(p *timeline.Page, v *vault.Vault, pageChecks bool, baseline *Base
 		}
 		diags = append(diags, pg...)
 	}
+	sh := checkShardChild(p, v.Config, baseline)
+	for i := range sh {
+		sh[i].Path = p.Doc.Path
+	}
+	diags = append(diags, sh...)
 	return diags
 }
 
@@ -278,6 +283,13 @@ func Run(v *vault.Vault, files []string, opt Options) (*Result, error) {
 			res.Findings = append(res.Findings, all...)
 		}
 	}
+
+	shardDiags, err := CheckShardDirs(v, files)
+	if err != nil {
+		return nil, err
+	}
+	shardDiags = applyOverridesEach(shardDiags, v.Config.Lint.Severity, v.Config.Lint.Overrides)
+	res.Findings = append(res.Findings, shardDiags...)
 
 	if opt.Mode == ModeVault && opt.FullVault && baseline != nil {
 		vanished := make([]string, 0, len(baseline.Pages))

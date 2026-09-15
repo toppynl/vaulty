@@ -33,3 +33,6 @@ lint:
   #     ratchet:
   #       TL006: false                 # never baselined; stays a plain warning forever
   #       TL008: false
+  shard:
+    type_dirs: ["wiki/*"]       # SH001-SH005 (§16); a dir is a hub-directory candidate
+                                 # when its parent matches one of these. [] disables SH*.
