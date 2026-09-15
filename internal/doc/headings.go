@@ -26,9 +26,14 @@ func (h Heading) Lines(d *Doc) int {
 func (h Heading) Bytes() int { return h.Span.Len() }
 
 // Headings scans d's body (frontmatter excluded) for ATX headings, in file
-// order, skipping anything inside a fenced code block.
+// order, skipping anything inside a fenced code block. A heading's section
+// ends at the first of: a later heading of level <= its own, a standalone
+// "---" divider line (the vault's Timeline divider, §1 — a hard content
+// boundary that closes every currently-open heading, not just same-level
+// ones), or EOF — never inside a fenced code block either way.
 func Headings(d *Doc) []Heading {
 	var out []Heading
+	var dividers []int // byte offsets of standalone "---" lines
 	inFence := false
 	var fenceMarker string
 	startLine := 1
@@ -50,6 +55,10 @@ func Headings(d *Doc) []Heading {
 		if inFence {
 			continue
 		}
+		if isDividerLine(line) {
+			dividers = append(dividers, d.LineStarts[n-1])
+			continue
+		}
 		level, text, ok := parseATX(line)
 		if !ok {
 			continue
@@ -64,9 +73,26 @@ func Headings(d *Doc) []Heading {
 				break
 			}
 		}
+		for _, dPos := range dividers {
+			if dPos > out[i].Span.Start && dPos < end {
+				end = dPos
+				break // dividers is in file order, so the first hit is nearest
+			}
+		}
 		out[i].Span.End = end
 	}
 	return out
+}
+
+// isDividerLine reports whether line (with only trailing \r trimmed, as
+// Doc.Line already does) is a standalone "---" divider: optional leading
+// spaces/tabs, then exactly "---", then nothing but trailing whitespace.
+// Matches doc.Parse's frontmatter delimiter check, and deliberately not a
+// broader thematic-break rule (CommonMark also allows "***"/"___", and 3+
+// repeats) — this exists only to stop leaking the vault's own Timeline
+// divider into the section above it, not to parse markdown in general.
+func isDividerLine(line string) bool {
+	return strings.TrimRight(strings.TrimLeft(line, " \t"), " \t") == "---"
 }
 
 // fenceOf reports whether trimmed opens/closes a fenced code block, and the

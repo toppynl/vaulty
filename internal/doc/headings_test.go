@@ -1,6 +1,9 @@
 package doc
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestHeadings(t *testing.T) {
 	src := "---\ntitle: X\n---\n\n# Top\n\nintro\n\n## Alpha\n\nalpha body\n\n### Alpha Sub\n\nsub body\n\n## Beta\n\nbeta body\n"
@@ -70,6 +73,41 @@ func TestHeadingsNoFrontmatterNoHeadings(t *testing.T) {
 	d := Parse("x.md", []byte("just text\nno headings here\n"))
 	if hs := Headings(d); len(hs) != 0 {
 		t.Errorf("got %d headings, want 0: %+v", len(hs), hs)
+	}
+}
+
+func TestHeadingsStopAtDivider(t *testing.T) {
+	src := "# Top\n\n## Related\n\nsome related text\n\n---\n\n## Timeline\n\n- entry\n"
+	d := Parse("x.md", []byte(src))
+	hs := Headings(d)
+	if len(hs) != 3 {
+		t.Fatalf("got %d headings, want 3: %+v", len(hs), hs)
+	}
+	related := hs[1]
+	dividerStart := strings.Index(src, "---")
+	if related.Span.End != dividerStart {
+		t.Errorf("Related span end = %d, want %d (start of ---)", related.Span.End, dividerStart)
+	}
+	if got := string(d.Src[related.Span.Start:related.Span.End]); strings.Contains(got, "---") {
+		t.Errorf("Related section contains the divider: %q", got)
+	}
+	// "Top" (level 1) is also closed by the divider: no later heading has
+	// level <= 1, so without the divider rule it would run to EOF.
+	top := hs[0]
+	if top.Span.End != dividerStart {
+		t.Errorf("Top span end = %d, want %d (start of ---)", top.Span.End, dividerStart)
+	}
+}
+
+func TestHeadingsDividerInFencedCodeIgnored(t *testing.T) {
+	src := "## Section\n\n```\n---\n```\n\nafter the fence\n"
+	d := Parse("x.md", []byte(src))
+	hs := Headings(d)
+	if len(hs) != 1 {
+		t.Fatalf("got %d headings, want 1: %+v", len(hs), hs)
+	}
+	if hs[0].Span.End != len(src) {
+		t.Errorf("Section span end = %d, want EOF %d (the '---' inside the fence must not count)", hs[0].Span.End, len(src))
 	}
 }
 
