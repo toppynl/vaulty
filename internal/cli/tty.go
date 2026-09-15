@@ -13,10 +13,19 @@ import (
 // (e.g. the bytes.Buffer the golden test harness feeds as stdin) or whose
 // descriptor is not a character device is treated as non-interactive.
 //
-// Injectable via the reader itself: callers pass a.stdin, so tests exercise
-// the real code path by construction (a bytes.Buffer never reports true)
-// without needing a separate mock hook.
+// Injectable two ways: callers pass a.stdin, so tests exercise the refusal
+// path by construction (a bytes.Buffer never reports true); and
+// VAULTY_STDIN_TTY=1/0 forces the answer for golden cases that need to
+// exercise the --accept-growth logic itself (not the terminal gate) without
+// an actual terminal — set only by tests, never meant for real use.
 func stdinIsTTY(r io.Reader) bool {
+	switch os.Getenv("VAULTY_STDIN_TTY") {
+	case "1":
+		return true
+	case "0":
+		return false
+	}
+
 	fd, ok := r.(interface{ Fd() uintptr })
 	if !ok {
 		return false

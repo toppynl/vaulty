@@ -99,6 +99,15 @@ var appendBoolFlags = map[string]bool{"--touch": true, "--dry-run": true}
 // §8.1) without loosening the entry-vs-flag disambiguation SetInterspersed
 // gives every other flag/positional in the CLI. A no-op when args does not
 // contain a "timeline" "append" pair.
+//
+// It also drops the first bare "--" it finds among the positionals. cobra's
+// arg-count check (Args: ExactArgs(2)) counts "--" itself as a third
+// positional once SetInterspersed(false) is in effect, so "append <page>
+// -- \"--literal entry\"" would otherwise fail with "accepts 2 arg(s),
+// received 3" even though a literal entry starting with "--" already
+// parses fine without the separator (SetInterspersed(false) stops flag
+// scanning at the first positional regardless). Supporting the separator
+// anyway matches the getopt/git convention users reach for instinctively.
 func normalizeAppendArgs(args []string) []string {
 	idx := -1
 	for i := 0; i+1 < len(args); i++ {
@@ -113,9 +122,14 @@ func normalizeAppendArgs(args []string) []string {
 
 	var flags, rest []string
 	sawSeparator := false
+	droppedSeparator := false
 	for _, a := range args[idx:] {
 		if !sawSeparator && a == "--" {
 			sawSeparator = true
+			if !droppedSeparator {
+				droppedSeparator = true
+				continue
+			}
 			rest = append(rest, a)
 			continue
 		}
