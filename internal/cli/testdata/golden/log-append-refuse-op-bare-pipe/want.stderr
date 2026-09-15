@@ -1,0 +1,1 @@
+vaulty: op must match ^[a-z0-9-]+$

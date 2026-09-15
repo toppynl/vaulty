@@ -21,7 +21,14 @@ vault's Claude Code setup (hook, permission allowlist, skill snippets).
 vaulty timeline lint [paths...]         # check format + page hygiene + shard hygiene (SH*, DESIGN.md §16)
 vaulty timeline lint --write-baseline   # recompute the TL006/TL008/PG002 ratchet baseline
 vaulty timeline read <page> [--timeline] [--since D] [--last N]
+vaulty timeline read <page> --headings                 # list section headings (line, lines, bytes)
+vaulty timeline read <page> --section "<heading text>" # print just that section
+vaulty timeline read <page> [...] --max-bytes N        # cap the printed content, report what was cut
 vaulty timeline append <page> "- **YYYY-MM-DD** | source — what" [--touch] [--dry-run]
+
+vaulty log append <op> <title> [--body TEXT] [--date YYYY-MM-DD]  # appends to log.md
+vaulty log last [-n N] [--op OP] [--since D]                      # most recent entries
+vaulty log lint                                                   # report malformed entries
 ```
 
 `<page>` accepts a bare name (`toppy`), a path (`wiki/systems/toppy.md`), or

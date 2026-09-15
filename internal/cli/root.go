@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -58,6 +60,12 @@ type app struct {
 // Execute runs the CLI and returns the process exit code. All I/O goes
 // through the given streams so golden tests can drive it in-process.
 func Execute(version string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if t := os.Getenv(name.EnvToday); t != "" {
+		if _, err := time.Parse("2006-01-02", t); err != nil {
+			fmt.Fprintf(stderr, "%s: $%s: invalid date %q (want YYYY-MM-DD)\n", name.Binary, name.EnvToday, t)
+			return ExitUsage
+		}
+	}
 	args = normalizeAppendArgs(args)
 	a := &app{stdin: stdin, stdout: stdout, stderr: stderr, version: version}
 	root := a.newRoot()
@@ -173,6 +181,7 @@ func (a *app) newRoot() *cobra.Command {
 	root.PersistentFlags().BoolVar(&a.flags.json, "json", false, "machine-readable JSON output")
 
 	root.AddCommand(a.newTimelineCmd())
+	root.AddCommand(a.newLogCmd())
 	root.AddCommand(a.newConfigCmd())
 	root.AddCommand(a.newVersionCmd())
 	// Reserved for later units (DESIGN.md §3.1): index, lint, migrate, dream.

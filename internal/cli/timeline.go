@@ -58,15 +58,20 @@ type readOpts struct {
 	since       string
 	last        int
 	frontmatter bool
+	headings    bool
+	section     string
+	maxBytes    int
+	maxBytesSet bool
 }
 
 func (a *app) newTimelineReadCmd() *cobra.Command {
 	var o readOpts
 	cmd := &cobra.Command{
 		Use:   "read <page>",
-		Short: "Print compiled truth (default) or Timeline entries of a page",
+		Short: "Print compiled truth (default), Timeline entries, headings or one section of a page",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			o.maxBytesSet = cmd.Flags().Changed("max-bytes")
 			return a.runTimelineRead(o, args[0])
 		},
 	}
@@ -74,6 +79,9 @@ func (a *app) newTimelineReadCmd() *cobra.Command {
 	cmd.Flags().StringVar(&o.since, "since", "", "only entries overlapping YYYY-MM-DD or later (implies --timeline)")
 	cmd.Flags().IntVar(&o.last, "last", 0, "only the last N entries (implies --timeline)")
 	cmd.Flags().BoolVar(&o.frontmatter, "frontmatter", false, "also print the frontmatter block first")
+	cmd.Flags().BoolVar(&o.headings, "headings", false, "list section headings with line number, line count and byte count instead of printing content")
+	cmd.Flags().StringVar(&o.section, "section", "", "print only this section (a heading's text, from the heading to the next heading of equal-or-higher level or EOF)")
+	cmd.Flags().IntVar(&o.maxBytes, "max-bytes", 0, "truncate the printed content to N bytes, with a marker noting how much was cut")
 	return cmd
 }
 

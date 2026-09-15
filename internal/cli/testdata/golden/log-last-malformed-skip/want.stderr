@@ -1,0 +1,2 @@
+vaulty: log.md:1: malformed log entry, skipped: missing [DATE]
+vaulty: log.md:3: malformed log entry, skipped: invalid date "2026-08-40"
