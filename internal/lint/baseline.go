@@ -12,13 +12,13 @@ import (
 	"github.com/toppynl/vaulty/internal/vault"
 )
 
-// ratchetDisabled reports whether a `lint.overrides` entry (DESIGN.md
+// RatchetDisabled reports whether a `lint.overrides` entry (DESIGN.md
 // §6.1a "per-path overrides") switches the ratchet off for code on path:
 // matching path against every override, in order, the last explicit
 // `ratchet.<code>` setting wins. No matching override, or none mentioning
 // code, leaves the ratchet on (the default) — matching config.Override's
 // own doc comment.
-func ratchetDisabled(overrides []config.Override, path string, code diag.Code) bool {
+func RatchetDisabled(overrides []config.Override, path string, code diag.Code) bool {
 	disabled := false
 	for _, ov := range overrides {
 		if !vault.MatchAny(ov.Paths, path) {
@@ -237,8 +237,8 @@ func applyRatchet(diags []diag.Diag, path string, baseline *Baseline, overrides 
 	// the Diag; the caller (checkPageHygiene) applies the PG002 ratchet
 	// directly via pg002Severity, where the token count is already in hand.
 
-	grew006 := n006 > bp.TL006 && !ratchetDisabled(overrides, path, diag.TL006EntryFormat)
-	grew008 := n008 > bp.TL008 && !ratchetDisabled(overrides, path, diag.TL008PartialDate)
+	grew006 := n006 > bp.TL006 && !RatchetDisabled(overrides, path, diag.TL006EntryFormat)
+	grew008 := n008 > bp.TL008 && !RatchetDisabled(overrides, path, diag.TL008PartialDate)
 	if !grew006 && !grew008 {
 		return diags
 	}

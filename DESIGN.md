@@ -662,6 +662,19 @@ which churns constantly and isn't compiled knowledge) keeps TL006/TL008 as
 plain warnings forever, never promoted to error for being un-baselined,
 and never written into the baseline by `--write-baseline`.
 
+An existing baseline entry that a newly-added (or newly-matching) override
+now exempts disappears from `--write-baseline`'s output the same way a
+genuine shrink would (see above) — `BuildBaseline` never counts a
+ratchet-disabled finding, so the fresh recompute is 0 regardless of what's
+still on the page. `--write-baseline` reports this distinctly from an
+ordinary shrink, one stderr line per vanishing path/code (`<path> <code>:
+lint.overrides disabled the ratchet for this path — baseline entry (was
+<old>) dropped, not a shrink`), so it's never mistaken for the page having
+actually improved. It also reports, once per override entry, when that
+entry's `paths` glob matches nothing anywhere in the vault (`lint.overrides
+[<i>] paths <globs> match no files in the vault`) — almost always a typo or
+a stale path left behind after a rename.
+
 **PG001 work material.** Applies only when the path matches
 `lint.page_checks.paths`. Scan the compiled-truth span line by line, skipping
 lines inside fenced code blocks (between lines starting with ```` ``` ```` or

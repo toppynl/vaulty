@@ -151,8 +151,8 @@ func checkPageHygiene(p *timeline.Page, pc config.PageChecks, path string, basel
 // the vault-mode stale count both derive from it, so they can never drift
 // apart from what CheckPage/checkPageHygiene actually find.
 func pageDebtCounts(p *timeline.Page, pageChecksApply bool, pc config.PageChecks, overrides []config.Override) (n006, n008, tokens int) {
-	tl006Off := ratchetDisabled(overrides, p.Doc.Path, diag.TL006EntryFormat)
-	tl008Off := ratchetDisabled(overrides, p.Doc.Path, diag.TL008PartialDate)
+	tl006Off := RatchetDisabled(overrides, p.Doc.Path, diag.TL006EntryFormat)
+	tl008Off := RatchetDisabled(overrides, p.Doc.Path, diag.TL008PartialDate)
 	for _, d := range p.AllDiags() {
 		switch d.Code {
 		case diag.TL006EntryFormat:

@@ -1,0 +1,1 @@
+vaulty: lint.overrides[0] paths [now/tracking/**] match no files in the vault

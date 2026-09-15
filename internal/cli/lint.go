@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/lint"
 	"github.com/toppynl/vaulty/internal/name"
@@ -105,6 +106,9 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
 
+	reportOverrideFilteredEntries(a, old, v.Config.Lint.Overrides)
+	reportUnmatchedOverrideGlobs(a, files, v.Config.Lint.Overrides)
+
 	merged, growth := lint.MergeBaseline(old, fresh, acceptGrowth)
 
 	if err := lint.SaveBaseline(path, merged); err != nil {
@@ -146,6 +150,63 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 		return &ExitError{Code: ExitFindings}
 	}
 	return nil
+}
+
+// reportOverrideFilteredEntries warns on stderr when a page's baseline
+// entry would silently vanish on --write-baseline not because the page
+// actually improved, but because `lint.overrides` now disables the ratchet
+// for that path/code (DESIGN.md §4.1, §6.1a): BuildBaseline excludes
+// ratchet-disabled findings from its counts entirely, so an old baseline
+// value that a fresh override now exempts looks exactly like an ordinary
+// shrink to MergeBaseline and disappears without a trace. old == nil (no
+// baseline yet) has nothing to compare against.
+func reportOverrideFilteredEntries(a *app, old *lint.Baseline, overrides []config.Override) {
+	if old == nil || len(overrides) == 0 {
+		return
+	}
+	paths := make([]string, 0, len(old.Pages))
+	for p := range old.Pages {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	codes := []struct {
+		code diag.Code
+		val  func(lint.PageBaseline) int
+	}{
+		{diag.TL006EntryFormat, func(b lint.PageBaseline) int { return b.TL006 }},
+		{diag.TL008PartialDate, func(b lint.PageBaseline) int { return b.TL008 }},
+		{diag.PG002CompiledTruthSize, func(b lint.PageBaseline) int { return b.PG002Tokens }},
+	}
+	for _, p := range paths {
+		entry := old.Pages[p]
+		for _, c := range codes {
+			v := c.val(entry)
+			if v > 0 && lint.RatchetDisabled(overrides, p, c.code) {
+				fmt.Fprintf(a.stderr, "%s: %s %s: lint.overrides disabled the ratchet for this path — baseline entry (was %d) dropped, not a shrink\n", name.Binary, p, c.code, v)
+			}
+		}
+	}
+}
+
+// reportUnmatchedOverrideGlobs warns on stderr about a `lint.overrides`
+// entry whose Paths glob matches nothing anywhere in the vault (files,
+// from the full Walk()) — almost always a typo'd path or a rename left
+// behind in config, silently exempting nothing instead of the intended
+// pages.
+func reportUnmatchedOverrideGlobs(a *app, files []string, overrides []config.Override) {
+	for i, ov := range overrides {
+		matched := false
+		for _, f := range files {
+			if vault.MatchAny(ov.Paths, f) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			fmt.Fprintf(a.stderr, "%s: lint.overrides[%d] paths %v match no files in the vault\n", name.Binary, i, ov.Paths)
+		}
+	}
 }
 
 // resolveWriteBaselineOld resolves the "old" baseline that --write-baseline
