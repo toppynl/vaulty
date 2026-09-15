@@ -57,6 +57,7 @@ type app struct {
 // Execute runs the CLI and returns the process exit code. All I/O goes
 // through the given streams so golden tests can drive it in-process.
 func Execute(version string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	args = normalizeAppendArgs(args)
 	a := &app{stdin: stdin, stdout: stdout, stderr: stderr, version: version}
 	root := a.newRoot()
 	root.SetArgs(args)
@@ -78,6 +79,58 @@ func Execute(version string, args []string, stdin io.Reader, stdout, stderr io.W
 	// cobra flag/arg errors
 	fmt.Fprintln(stderr, name.Binary+":", err)
 	return ExitUsage
+}
+
+// appendBoolFlags are "timeline append"'s long boolean flags.
+// normalizeAppendArgs floats them ahead of the two positionals
+// (<page> "<entry>") regardless of where the caller put them, since the
+// entry conventionally starts with "- " and `append`'s Args parsing
+// (SetInterspersed(false), timeline.go) requires flags to precede every
+// positional to avoid pflag misreading that entry as a flag cluster.
+var appendBoolFlags = map[string]bool{"--touch": true, "--dry-run": true}
+
+// normalizeAppendArgs finds a "timeline append" invocation in args and
+// reorders the args after it so appendBoolFlags come first, in their
+// original relative order, followed by every other token (the positionals,
+// and anything at all once a literal "--" separator is seen — that always
+// ends reordering, exactly like it ends flag scanning in getopt/git) in
+// their original relative order. This lets "append <page> \"<entry>\"
+// --touch" and "append --touch <page> \"<entry>\"" both work (DESIGN.md
+// §8.1) without loosening the entry-vs-flag disambiguation SetInterspersed
+// gives every other flag/positional in the CLI. A no-op when args does not
+// contain a "timeline" "append" pair.
+func normalizeAppendArgs(args []string) []string {
+	idx := -1
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "timeline" && args[i+1] == "append" {
+			idx = i + 2
+			break
+		}
+	}
+	if idx < 0 {
+		return args
+	}
+
+	var flags, rest []string
+	sawSeparator := false
+	for _, a := range args[idx:] {
+		if !sawSeparator && a == "--" {
+			sawSeparator = true
+			rest = append(rest, a)
+			continue
+		}
+		if !sawSeparator && appendBoolFlags[a] {
+			flags = append(flags, a)
+			continue
+		}
+		rest = append(rest, a)
+	}
+
+	out := make([]string, 0, len(args))
+	out = append(out, args[:idx]...)
+	out = append(out, flags...)
+	out = append(out, rest...)
+	return out
 }
 
 func (a *app) newRoot() *cobra.Command {

@@ -726,6 +726,20 @@ on them.
 
 ## 8. `vaulty timeline append <page> "<entry>"`
 
+**CLI arg order.** `<page> "<entry>"` are positional and `--touch`/
+`--dry-run` may appear before or after them in any combination — `append
+<page> "<entry>" --touch` and `append --touch <page> "<entry>"` are
+equivalent. This needs help from `Execute` (`internal/cli/root.go`,
+`normalizeAppendArgs`): the entry conventionally starts with `- `, which
+pflag misreads as a shorthand-flag cluster regardless of
+`SetInterspersed`, so `append`'s own flag parsing keeps
+`SetInterspersed(false)` (flags must precede every positional) and
+`normalizeAppendArgs` floats `--touch`/`--dry-run` in front of the
+positionals before cobra ever parses, whichever side of them the caller
+wrote. A literal `--` separator (getopt/git convention) ends this
+reordering and all flag scanning — everything after it is positional
+verbatim, for the rare entry that must itself start with `--`.
+
 ### 8.1 Entry validation (`ValidateEntry`; failure exits 3)
 
 1. Trim trailing whitespace and newlines from the whole input. If it starts

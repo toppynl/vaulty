@@ -111,6 +111,14 @@ backlink log lines. `vaulty timeline append` runs through the Bash tool
 (not Edit/Write), so it does not trigger the PostToolUse hook — appending a
 Timeline line is not a "touch" of compiled truth.
 
+`--touch`/`--dry-run` work in any position — before or after `<page>
+"<entry>"` — so `vaulty timeline append <page> "<entry>" --touch` and
+`vaulty timeline append --touch <page> "<entry>"` are equivalent; use
+whichever reads better in a skill. The entry may also be written without
+its leading `- ` (`"**YYYY-MM-DD** | ..."`); `append` adds the bullet
+itself. If an entry must literally start with `--`, put it after a bare
+`--` separator: `vaulty timeline append <page> -- "--literal entry"`.
+
 ## 6. lint skill
 
 - Touched-file check: `vaulty timeline lint --changed` (findings on the

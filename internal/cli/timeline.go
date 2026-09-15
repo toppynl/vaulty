@@ -83,7 +83,7 @@ type appendOpts struct {
 func (a *app) newTimelineAppendCmd() *cobra.Command {
 	var o appendOpts
 	cmd := &cobra.Command{
-		Use:   `append <page> "<entry>"`,
+		Use:   `append <page> "<entry>" [--touch] [--dry-run]`,
 		Short: "Insert a Timeline entry by date (creates divider + section if missing)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -92,10 +92,14 @@ func (a *app) newTimelineAppendCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&o.touch, "touch", false, "also set frontmatter updated: to today")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the resulting Timeline block, write nothing")
-	// The entry argument starts with "- **DATE**...", which pflag would
-	// otherwise try to parse as a shorthand-flag cluster. Stop flag
-	// scanning at the first positional so flags must precede <page>
-	// "<entry>", never follow it.
+	// The entry argument conventionally starts with "- **DATE**...", which
+	// pflag would otherwise try to parse as a shorthand-flag cluster no
+	// matter where flags are allowed to appear. Stop flag scanning at the
+	// first positional so the entry is never misread as a flag; Execute
+	// (root.go, normalizeAppendArgs) compensates by moving --touch/
+	// --dry-run in front of the positionals before cobra ever parses,
+	// so both "append <page> \"<entry>\" --touch" and "append --touch
+	// <page> \"<entry>\"" work (DESIGN.md §8.1).
 	cmd.Flags().SetInterspersed(false)
 	return cmd
 }
