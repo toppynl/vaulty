@@ -210,21 +210,31 @@ deny-list plus (c)'s after-the-fact check give the same protection against
 the sloppiness this is actually scoped to, without either problem.
 
 **(c) Pre-commit backstop (recommended): `vaulty timeline lint
---check-baseline`.** This is the actual second line of defense: read-only,
-runs after whatever a Bash command did, and refuses if
-`.vaulty-baseline.json` on disk is higher on any page/code than the one
-committed at HEAD — regardless of how it got there (a bypassed
+--check-baseline --staged`.** This is the actual second line of defense:
+read-only, runs after whatever a Bash command did, and refuses if the
+ratchet baseline about to be committed is higher on any page/code than the
+one committed at HEAD — regardless of how it got there (a bypassed
 `--write-baseline`, a hand-edit, `rm` + a fresh recompute, an override that
-happened to zero out a stale entry the wrong way). It shares
-`resolveWriteBaselineOld` with `--write-baseline` itself (DESIGN.md §6.1a),
-so the two can never disagree about what counts as growth:
+happened to zero out a stale entry the wrong way). `--staged` compares the
+git index (what the commit will actually ship) rather than the working
+copy, so staging a grown baseline and then restoring the file on disk still
+gets caught. It shares `resolveWriteBaselineOld` with `--write-baseline`
+itself (DESIGN.md §6.1a), so the two can never disagree about what counts
+as growth:
 
 ```bash
 #!/bin/sh
 # .git/hooks/pre-commit (or wire into an existing pre-commit runner)
-git diff --cached --name-only | grep -qx '.vaulty-baseline.json' || exit 0
-vaulty timeline lint --check-baseline
+vaulty [--vault <dir>] timeline lint --check-baseline --staged
 ```
+
+Always run it, unconditionally — don't gate it on a `git diff --cached
+--name-only | grep` for the baseline filename first: that grep only
+catches the baseline at its default path, misses a vault-configured
+`lint.baselinePath` elsewhere (e.g. `sub/.vaulty-baseline.json`), and on a
+miss skips the check entirely instead of failing safe. `--check-baseline
+--staged` is read-only and cheap, so there is no cost to always running
+it.
 
 **(d) Skill-docs rule: agents never run `--write-baseline` or
 `--accept-growth`.** Any skill or CLAUDE.md instructing an agent to use

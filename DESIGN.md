@@ -613,7 +613,15 @@ fixing the flagged page or asking Peep instead.
    disk) still writes outright, growth included, exactly as before.
    Outside git, the on-disk file is used directly (pre-existing behavior).
    Implemented as `resolveWriteBaselineOld` (`internal/cli/lint.go`) and
-   `lint.ExceedsBaseline` (`internal/lint/baseline.go`).
+   `lint.ExceedsBaseline` (`internal/lint/baseline.go`). Whether HEAD has a
+   commit at all, and whether the baseline path is tracked there, is
+   decided by exit code (`git rev-parse --verify -q HEAD`, `git cat-file -e
+   HEAD:./<path>`), not by pattern-matching `git show`'s stderr text: a
+   vault with zero commits fails `git show` with "invalid object name
+   'HEAD'", a message a first pass at this missed enumerating, which made
+   `--write-baseline`/`--check-baseline` refuse instead of bootstrapping in
+   a brand-new vault. Exit-code checks are also independent of git's output
+   language (`LANG`/`LC_ALL`), which stderr-matching never was.
 2. *`--accept-growth` needs a real terminal.* Because it is a plain flag,
    `Bash(vaulty:*)` already permits it — nothing stops a script or an
    agent from typing it. `--write-baseline --accept-growth` now refuses
@@ -644,6 +652,26 @@ submap-safety fix `--write-baseline` has), and exits `ExitFindings` if the
 disk copy is higher on any page/code — without writing anything. Meant to
 run from a `pre-commit` hook, after staging, as the cheap independent
 second check docs/claude-code.md §8c recommends.
+
+**`--check-baseline --staged` (hardening round 4, 2026-09-15).** Plain
+`--check-baseline` diffs the *working copy* against HEAD, not the index.
+That's a gap in a pre-commit hook: staging a grown baseline and then
+restoring the file on disk (`git add .vaulty-baseline.json` with the grown
+value, then overwriting it back to the old value without re-adding) passes
+`--check-baseline` with exit 0 while the commit itself still ships the
+grown value from the index. `--staged` makes the comparison source the git
+index instead (`git show :./<baseline_path>`, i.e. `resolveWriteBaselineOld`
+called with `staged=true`), falling back to the working copy when the path
+isn't staged at all — matching what a commit will actually contain rather
+than whatever happens to sit on disk when the hook runs. `--write-baseline`
+never takes `--staged`: it writes the working copy, so that's what it must
+diff against. docs/claude-code.md §8c's pre-commit snippet always runs
+`--check-baseline --staged` unconditionally now, rather than first
+`grep`-gating on `git diff --cached --name-only` for the default baseline
+filename — that gate silently no-ops on a vault-configured
+`lint.baselinePath` elsewhere (e.g. `sub/.vaulty-baseline.json`), and the
+check is cheap and read-only enough that gating it was never worth the
+risk of skipping it.
 
 A page with zero TL006/TL008 findings and no PG002-over-max finding gets no
 entry at all (adding one would be a no-op: an absent page's implicit `{0,0,0}`

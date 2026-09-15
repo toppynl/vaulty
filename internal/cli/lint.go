@@ -35,7 +35,10 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 		if o.writeBaseline {
 			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--check-baseline and --write-baseline are mutually exclusive")}
 		}
-		return a.runCheckBaseline(v)
+		return a.runCheckBaseline(v, o.staged)
+	}
+	if o.staged {
+		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--staged only applies with --check-baseline")}
 	}
 	if o.writeBaseline {
 		if len(args) > 0 || o.changed != "" {
@@ -110,7 +113,7 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 	}
 
 	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
-	old, err := resolveWriteBaselineOld(v, path)
+	old, err := resolveWriteBaselineOld(v, path, false)
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
@@ -163,17 +166,23 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 
 // runCheckBaseline implements `lint --check-baseline` (DESIGN.md §6.1a,
 // docs/claude-code.md §8c): a read-only pre-commit backstop that reports
-// whether the ratchet baseline on disk has grown versus the one committed
-// at HEAD, without writing anything. It exists because the CLI's own
+// whether the ratchet baseline has grown versus the one committed at HEAD,
+// without writing anything. It exists because the CLI's own
 // `--write-baseline` guard only helps when growth actually goes through
 // that command — a hand-edited commit that touches `.vaulty-baseline.json`
 // directly bypasses it entirely. Reuses resolveWriteBaselineOld exactly as
 // --write-baseline does (same HEAD resolution, same submap-safety, same
 // "missing on disk"/"exceeds HEAD" refusals), so both commands can never
 // disagree about what counts as growth.
-func (a *app) runCheckBaseline(v *vault.Vault) error {
+//
+// staged selects what "old" means: the working copy (default), or the
+// staged content in the git index (--staged) — the latter is what a
+// pre-commit hook should use, since a commit ships the index, not the
+// working tree. Staging a growth and then restoring the file on disk would
+// otherwise read as a shrink.
+func (a *app) runCheckBaseline(v *vault.Vault, staged bool) error {
 	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
-	if _, err := resolveWriteBaselineOld(v, path); err != nil {
+	if _, err := resolveWriteBaselineOld(v, path, staged); err != nil {
 		return &ExitError{Code: ExitFindings, Err: err}
 	}
 	fmt.Fprintf(a.stdout, "%s: baseline check: no growth vs HEAD\n", name.Binary)
@@ -238,20 +247,29 @@ func reportUnmatchedOverrideGlobs(a *app, files []string, overrides []config.Ove
 }
 
 // resolveWriteBaselineOld resolves the "old" baseline that --write-baseline
-// diffs the freshly recomputed one against (DESIGN.md §6.1a, Peep's
-// 2026-09-15 decision). Inside a git repo, "old" is always the baseline as
-// committed at HEAD, never the on-disk file: that closes two bypasses of
-// the shrink-only ratchet — `rm .vaulty-baseline.json && vaulty timeline
-// lint --write-baseline` (no old on disk, but one exists at HEAD) and
-// hand-raising a value on disk before running --write-baseline (the disk
-// file is never consulted as the growth reference). A baseline file that
-// exists at HEAD but is missing on disk, or that is higher on disk than at
-// HEAD, is refused outright rather than silently reconciled — those are
-// signs of tampering or an incomplete checkout, not a bootstrap. A real
-// bootstrap (no baseline at HEAD and none on disk) still returns nil,
-// meaning first creation, growth included, exactly as before. Outside a
-// git repo, the on-disk file is used directly: current (pre-U8) behavior.
-func resolveWriteBaselineOld(v *vault.Vault, path string) (*lint.Baseline, error) {
+// (and --check-baseline) diffs the freshly recomputed/staged one against
+// (DESIGN.md §6.1a, Peep's 2026-09-15 decision). Inside a git repo, "old"
+// is always the baseline as committed at HEAD, never the on-disk file:
+// that closes two bypasses of the shrink-only ratchet — `rm
+// .vaulty-baseline.json && vaulty timeline lint --write-baseline` (no old
+// on disk, but one exists at HEAD) and hand-raising a value on disk before
+// running --write-baseline (the disk file is never consulted as the
+// growth reference). A baseline file that exists at HEAD but is missing
+// from the comparison source (disk, or the index when staged), or that is
+// higher there than at HEAD, is refused outright rather than silently
+// reconciled — those are signs of tampering or an incomplete checkout, not
+// a bootstrap. A real bootstrap (no baseline at HEAD and none in the
+// comparison source) still returns nil, meaning first creation, growth
+// included, exactly as before. Outside a git repo, the on-disk file is
+// used directly: current (pre-U8) behavior.
+//
+// staged is true only for `--check-baseline --staged`: the comparison
+// source is then the git index (`git show :./<path>`), falling back to
+// the working copy when the path isn't staged, so a pre-commit hook sees
+// exactly what the commit will ship rather than whatever happens to be on
+// disk at the moment it runs. --write-baseline always passes staged=false:
+// it writes the working copy, so that is what it must diff against.
+func resolveWriteBaselineOld(v *vault.Vault, path string, staged bool) (*lint.Baseline, error) {
 	if !isGitRepo(v.Root) {
 		return lint.LoadBaseline(path)
 	}
@@ -262,7 +280,7 @@ func resolveWriteBaselineOld(v *vault.Vault, path string) (*lint.Baseline, error
 	}
 	relPath = filepath.ToSlash(relPath)
 
-	disk, err := lint.LoadBaseline(path)
+	disk, err := loadBaselineOld(v.Root, path, relPath, staged)
 	if err != nil {
 		return nil, err
 	}
@@ -293,12 +311,17 @@ func resolveWriteBaselineOld(v *vault.Vault, path string) (*lint.Baseline, error
 		head.Pages = map[string]lint.PageBaseline{}
 	}
 
+	source := "on disk"
+	if staged {
+		source = "staged"
+	}
+
 	if disk == nil {
-		return nil, fmt.Errorf("%s exists at HEAD but is missing on disk: restore it (e.g. `git checkout HEAD -- %s`) before writing a fresh baseline", v.Config.Lint.BaselinePath, v.Config.Lint.BaselinePath)
+		return nil, fmt.Errorf("%s exists at HEAD but is missing %s: restore it (e.g. `git checkout HEAD -- %s`) before writing a fresh baseline", v.Config.Lint.BaselinePath, source, v.Config.Lint.BaselinePath)
 	}
 
 	if exceeds, p, code, diskVal, headVal := lint.ExceedsBaseline(disk, &head); exceeds {
-		return nil, fmt.Errorf("%s on disk has %s %s=%d, higher than %d committed at HEAD: revert manual edits to the baseline before writing it", v.Config.Lint.BaselinePath, p, code, diskVal, headVal)
+		return nil, fmt.Errorf("%s %s has %s %s=%d, higher than %d committed at HEAD: revert manual edits to the baseline before writing it", v.Config.Lint.BaselinePath, source, p, code, diskVal, headVal)
 	}
 
 	return &head, nil
@@ -319,6 +342,30 @@ func isGitRepo(root string) bool {
 // silently treated as a bootstrap.
 var errGitPathNotAtHEAD = errors.New("path not present at HEAD")
 
+// headExists reports whether root has at least one commit, via exit code
+// (`git rev-parse --verify -q HEAD`) rather than parsing stderr text: a
+// repo with zero commits fails with "invalid object name 'HEAD'" — a
+// message that is easy to miss enumerating (it was), and that in any case
+// depends on git's output language (LANG/LC_ALL), which stderr-matching
+// never accounted for.
+func headExists(root string) bool {
+	cmd := exec.Command("git", "-C", root, "rev-parse", "--verify", "-q", "HEAD")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
+}
+
+// gitPathExistsAtHEAD reports whether relPath (relative to root, the vault
+// root) exists in the tree committed at HEAD, via `git cat-file -e` and
+// its exit code rather than stderr text, for the same language- and
+// message-independence as headExists.
+func gitPathExistsAtHEAD(root, relPath string) bool {
+	cmd := exec.Command("git", "-C", root, "cat-file", "-e", "HEAD:./"+relPath)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
+}
+
 // gitShowAtHEAD returns the content of relPath (relative to root, the
 // vault root) as committed at HEAD. It runs with `-C root` and a
 // cwd-relative pathspec (`HEAD:./relPath`) rather than plain
@@ -328,36 +375,64 @@ var errGitPathNotAtHEAD = errors.New("path not present at HEAD")
 // a different (usually nonexistent) path. `./`-prefixing makes git resolve
 // it relative to `-C`'s directory instead, matching what "relPath, from
 // the vault root" actually means regardless of where the repo root is.
+//
+// Whether there is anything to show is decided up front by exit code
+// (headExists, gitPathExistsAtHEAD) rather than by pattern-matching `git
+// show`'s stderr: a repo with no commits yet ("invalid object name
+// 'HEAD'") is a real bootstrap case that stderr-matching used to miss,
+// causing --write-baseline/--check-baseline to refuse instead of
+// bootstrapping in a brand-new vault.
 func gitShowAtHEAD(root, relPath string) ([]byte, error) {
+	if !headExists(root) || !gitPathExistsAtHEAD(root, relPath) {
+		return nil, errGitPathNotAtHEAD
+	}
 	cmd := exec.Command("git", "-C", root, "show", "HEAD:./"+relPath)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		msg := stderr.String()
-		if gitShowMeansNotAtHEAD(msg) {
-			return nil, errGitPathNotAtHEAD
-		}
-		return nil, fmt.Errorf("git show HEAD:./%s: %w: %s", relPath, err, strings.TrimSpace(msg))
+		return nil, fmt.Errorf("git show HEAD:./%s: %w: %s", relPath, err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
 }
 
-// gitShowMeansNotAtHEAD reports whether git's stderr for a failed
-// `git show HEAD:./path` means "there is genuinely nothing to compare
-// against" (path untracked at HEAD, or no HEAD commit yet) rather than
-// some other git failure (permission, corruption, wrong cwd, ...) that
-// must be refused instead of treated as a bootstrap.
-func gitShowMeansNotAtHEAD(stderr string) bool {
-	switch {
-	case strings.Contains(stderr, "does not exist in"),
-		strings.Contains(stderr, "exists on disk, but not in"),
-		strings.Contains(stderr, "bad revision 'HEAD'"),
-		strings.Contains(stderr, "unknown revision or path not in the working tree"):
-		return true
-	default:
-		return false
+// gitPathExistsInIndex reports whether relPath (relative to root, the
+// vault root) is staged in the git index — `git cat-file -e :./relPath`,
+// exit code only, mirroring gitPathExistsAtHEAD's HEAD check.
+func gitPathExistsInIndex(root, relPath string) bool {
+	cmd := exec.Command("git", "-C", root, "cat-file", "-e", ":./"+relPath)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
+}
+
+// loadBaselineOld resolves the "disk" side of the growth comparison
+// (DESIGN.md §6.1a): the on-disk baseline file for --write-baseline and
+// for plain --check-baseline, or — when staged is true
+// (--check-baseline --staged) — the version staged in the git index
+// (`git show :./relPath`), falling back to the on-disk file when relPath
+// isn't staged. A commit ships the index, not the working tree, so a
+// pre-commit hook must diff against the index: staging a grown baseline
+// and then restoring the working copy would otherwise pass as a shrink.
+func loadBaselineOld(root, path, relPath string, staged bool) (*lint.Baseline, error) {
+	if !staged || !gitPathExistsInIndex(root, relPath) {
+		return lint.LoadBaseline(path)
 	}
+	cmd := exec.Command("git", "-C", root, "show", ":./"+relPath)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git show :./%s: %w: %s", relPath, err, strings.TrimSpace(stderr.String()))
+	}
+	var b lint.Baseline
+	if err := json.Unmarshal(out, &b); err != nil {
+		return nil, fmt.Errorf("%s (staged): %w", relPath, err)
+	}
+	if b.Pages == nil {
+		b.Pages = map[string]lint.PageBaseline{}
+	}
+	return &b, nil
 }
 
 func (a *app) renderLint(res *lint.Result, showWarnings bool) {
