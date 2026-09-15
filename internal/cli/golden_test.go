@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -55,6 +56,20 @@ func runGoldenCase(t *testing.T, dir string) {
 	if _, err := os.Stat(filepath.Join(dir, "vault")); err == nil {
 		if err := copyDir(filepath.Join(dir, "vault"), tmp); err != nil {
 			t.Fatal(err)
+		}
+	}
+
+	// Optional git.sh: shell commands run in tmp (cwd) before the CLI, for
+	// cases that need real git state (e.g. --changed). Own commit identity
+	// via -c flags — the sandbox has no configured git user. Resolved to an
+	// absolute path since cmd.Dir is tmp, not this package's directory.
+	if script, err := filepath.Abs(filepath.Join(dir, "git.sh")); err == nil {
+		if _, statErr := os.Stat(script); statErr == nil {
+			cmd := exec.Command("sh", script)
+			cmd.Dir = tmp
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git.sh: %v\n%s", err, out)
+			}
 		}
 	}
 

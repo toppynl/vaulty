@@ -1,0 +1,4 @@
+wiki/a.md:15: TL001 error: more than one '## Timeline' block
+wiki/a.md:15: TL002 error: Timeline heading without a divider directly above it
+count PG001 work-material 0
+count PG002 compiled-truth-size 0

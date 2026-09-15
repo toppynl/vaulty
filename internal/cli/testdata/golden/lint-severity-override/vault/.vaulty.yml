@@ -1,0 +1,5 @@
+version: 1
+lint:
+  severity:
+    TL008: error
+    TL005: off
