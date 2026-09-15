@@ -28,6 +28,13 @@ type Config struct {
 	Frontmatter Frontmatter `yaml:"frontmatter" json:"frontmatter"`
 	Timeline    Timeline    `yaml:"timeline" json:"timeline"`
 	Lint        Lint        `yaml:"lint" json:"lint"`
+	Log         Log         `yaml:"log" json:"log"`
+}
+
+// Log configures `vaulty log append|last|lint` (DESIGN.md §16).
+type Log struct {
+	// Path to the log file, relative to the vault root.
+	Path string `yaml:"path" json:"path"`
 }
 
 type Frontmatter struct {
@@ -119,6 +126,7 @@ func Default() *Config {
 			BaselinePath: ".vaulty-baseline.json",
 			Shard:        Shard{TypeDirs: []string{"wiki/*"}},
 		},
+		Log: Log{Path: "log.md"},
 	}
 }
 
@@ -164,6 +172,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Lint.BaselinePath) == "" {
 		return errors.New("lint.baseline_path must not be empty")
+	}
+	if strings.TrimSpace(c.Log.Path) == "" {
+		return errors.New("log.path must not be empty")
 	}
 	for code, sev := range c.Lint.Severity {
 		switch sev {

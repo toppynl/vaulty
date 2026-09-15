@@ -173,6 +173,7 @@ func (a *app) newRoot() *cobra.Command {
 	root.PersistentFlags().BoolVar(&a.flags.json, "json", false, "machine-readable JSON output")
 
 	root.AddCommand(a.newTimelineCmd())
+	root.AddCommand(a.newLogCmd())
 	root.AddCommand(a.newConfigCmd())
 	root.AddCommand(a.newVersionCmd())
 	// Reserved for later units (DESIGN.md §3.1): index, lint, migrate, dream.

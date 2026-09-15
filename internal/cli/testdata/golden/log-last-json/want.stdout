@@ -1,0 +1,12 @@
+{
+  "path": "log.md",
+  "entries": [
+    {
+      "line": 6,
+      "date": "2026-08-15",
+      "op": "deploy",
+      "title": "Entry four"
+    }
+  ],
+  "malformed_count": 0
+}
