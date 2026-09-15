@@ -613,7 +613,15 @@ fixing the flagged page or asking Peep instead.
    disk) still writes outright, growth included, exactly as before.
    Outside git, the on-disk file is used directly (pre-existing behavior).
    Implemented as `resolveWriteBaselineOld` (`internal/cli/lint.go`) and
-   `lint.ExceedsBaseline` (`internal/lint/baseline.go`).
+   `lint.ExceedsBaseline` (`internal/lint/baseline.go`). Whether HEAD has a
+   commit at all, and whether the baseline path is tracked there, is
+   decided by exit code (`git rev-parse --verify -q HEAD`, `git cat-file -e
+   HEAD:./<path>`), not by pattern-matching `git show`'s stderr text: a
+   vault with zero commits fails `git show` with "invalid object name
+   'HEAD'", a message a first pass at this missed enumerating, which made
+   `--write-baseline`/`--check-baseline` refuse instead of bootstrapping in
+   a brand-new vault. Exit-code checks are also independent of git's output
+   language (`LANG`/`LC_ALL`), which stderr-matching never was.
 2. *`--accept-growth` needs a real terminal.* Because it is a plain flag,
    `Bash(vaulty:*)` already permits it — nothing stops a script or an
    agent from typing it. `--write-baseline --accept-growth` now refuses

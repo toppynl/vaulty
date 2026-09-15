@@ -319,6 +319,30 @@ func isGitRepo(root string) bool {
 // silently treated as a bootstrap.
 var errGitPathNotAtHEAD = errors.New("path not present at HEAD")
 
+// headExists reports whether root has at least one commit, via exit code
+// (`git rev-parse --verify -q HEAD`) rather than parsing stderr text: a
+// repo with zero commits fails with "invalid object name 'HEAD'" — a
+// message that is easy to miss enumerating (it was), and that in any case
+// depends on git's output language (LANG/LC_ALL), which stderr-matching
+// never accounted for.
+func headExists(root string) bool {
+	cmd := exec.Command("git", "-C", root, "rev-parse", "--verify", "-q", "HEAD")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
+}
+
+// gitPathExistsAtHEAD reports whether relPath (relative to root, the vault
+// root) exists in the tree committed at HEAD, via `git cat-file -e` and
+// its exit code rather than stderr text, for the same language- and
+// message-independence as headExists.
+func gitPathExistsAtHEAD(root, relPath string) bool {
+	cmd := exec.Command("git", "-C", root, "cat-file", "-e", "HEAD:./"+relPath)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
+}
+
 // gitShowAtHEAD returns the content of relPath (relative to root, the
 // vault root) as committed at HEAD. It runs with `-C root` and a
 // cwd-relative pathspec (`HEAD:./relPath`) rather than plain
@@ -328,36 +352,25 @@ var errGitPathNotAtHEAD = errors.New("path not present at HEAD")
 // a different (usually nonexistent) path. `./`-prefixing makes git resolve
 // it relative to `-C`'s directory instead, matching what "relPath, from
 // the vault root" actually means regardless of where the repo root is.
+//
+// Whether there is anything to show is decided up front by exit code
+// (headExists, gitPathExistsAtHEAD) rather than by pattern-matching `git
+// show`'s stderr: a repo with no commits yet ("invalid object name
+// 'HEAD'") is a real bootstrap case that stderr-matching used to miss,
+// causing --write-baseline/--check-baseline to refuse instead of
+// bootstrapping in a brand-new vault.
 func gitShowAtHEAD(root, relPath string) ([]byte, error) {
+	if !headExists(root) || !gitPathExistsAtHEAD(root, relPath) {
+		return nil, errGitPathNotAtHEAD
+	}
 	cmd := exec.Command("git", "-C", root, "show", "HEAD:./"+relPath)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		msg := stderr.String()
-		if gitShowMeansNotAtHEAD(msg) {
-			return nil, errGitPathNotAtHEAD
-		}
-		return nil, fmt.Errorf("git show HEAD:./%s: %w: %s", relPath, err, strings.TrimSpace(msg))
+		return nil, fmt.Errorf("git show HEAD:./%s: %w: %s", relPath, err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
-}
-
-// gitShowMeansNotAtHEAD reports whether git's stderr for a failed
-// `git show HEAD:./path` means "there is genuinely nothing to compare
-// against" (path untracked at HEAD, or no HEAD commit yet) rather than
-// some other git failure (permission, corruption, wrong cwd, ...) that
-// must be refused instead of treated as a bootstrap.
-func gitShowMeansNotAtHEAD(stderr string) bool {
-	switch {
-	case strings.Contains(stderr, "does not exist in"),
-		strings.Contains(stderr, "exists on disk, but not in"),
-		strings.Contains(stderr, "bad revision 'HEAD'"),
-		strings.Contains(stderr, "unknown revision or path not in the working tree"):
-		return true
-	default:
-		return false
-	}
 }
 
 func (a *app) renderLint(res *lint.Result, showWarnings bool) {
