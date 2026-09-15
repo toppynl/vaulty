@@ -30,9 +30,10 @@ func (a *app) newTimelineCmd() *cobra.Command {
 // ---- lint -------------------------------------------------------------
 
 type lintOpts struct {
-	hook    bool   // read Claude Code PostToolUse JSON from stdin
-	changed string // git ref; lint files changed vs ref (per-file mode)
-	strict  bool   // warnings also fail
+	hook     bool   // read Claude Code PostToolUse JSON from stdin
+	changed  string // git ref; lint files changed vs ref (per-file mode)
+	strict   bool   // warnings also fail
+	warnings bool   // print warnings in human mode
 }
 
 func (a *app) newTimelineLintCmd() *cobra.Command {
@@ -48,12 +49,8 @@ func (a *app) newTimelineLintCmd() *cobra.Command {
 	cmd.Flags().StringVar(&o.changed, "changed", "", "lint .md files changed vs this git ref (default ref: main)")
 	cmd.Flags().Lookup("changed").NoOptDefVal = "main"
 	cmd.Flags().BoolVar(&o.strict, "strict", false, "treat warnings as errors")
+	cmd.Flags().BoolVar(&o.warnings, "warnings", false, "also print warnings in human mode")
 	return cmd
-}
-
-func (a *app) runTimelineLint(o lintOpts, args []string) error {
-	// TODO(step 3): DESIGN.md §6.
-	return &ExitError{Code: ExitUsage, Err: ErrNotImplemented}
 }
 
 // ---- read -------------------------------------------------------------
