@@ -94,7 +94,7 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 	}
 
 	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
-	old, err := lint.LoadBaseline(path)
+	old, err := resolveWriteBaselineOld(v, path)
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
@@ -140,6 +140,85 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 		return &ExitError{Code: ExitFindings}
 	}
 	return nil
+}
+
+// resolveWriteBaselineOld resolves the "old" baseline that --write-baseline
+// diffs the freshly recomputed one against (DESIGN.md §6.1a, Peep's
+// 2026-09-15 decision). Inside a git repo, "old" is always the baseline as
+// committed at HEAD, never the on-disk file: that closes two bypasses of
+// the shrink-only ratchet — `rm .vaulty-baseline.json && vaulty timeline
+// lint --write-baseline` (no old on disk, but one exists at HEAD) and
+// hand-raising a value on disk before running --write-baseline (the disk
+// file is never consulted as the growth reference). A baseline file that
+// exists at HEAD but is missing on disk, or that is higher on disk than at
+// HEAD, is refused outright rather than silently reconciled — those are
+// signs of tampering or an incomplete checkout, not a bootstrap. A real
+// bootstrap (no baseline at HEAD and none on disk) still returns nil,
+// meaning first creation, growth included, exactly as before. Outside a
+// git repo, the on-disk file is used directly: current (pre-U8) behavior.
+func resolveWriteBaselineOld(v *vault.Vault, path string) (*lint.Baseline, error) {
+	if !isGitRepo(v.Root) {
+		return lint.LoadBaseline(path)
+	}
+
+	relPath, err := filepath.Rel(v.Root, path)
+	if err != nil {
+		return nil, err
+	}
+	relPath = filepath.ToSlash(relPath)
+
+	disk, err := lint.LoadBaseline(path)
+	if err != nil {
+		return nil, err
+	}
+
+	headData, headErr := gitShowAtHEAD(v.Root, relPath)
+	if headErr != nil {
+		// Not tracked at HEAD (or no HEAD commit yet): nothing committed to
+		// diff against. If a file already exists on disk, treat it as the
+		// old baseline (matches non-git behavior); otherwise this is a real
+		// bootstrap.
+		return disk, nil
+	}
+
+	var head lint.Baseline
+	if err := json.Unmarshal(headData, &head); err != nil {
+		return nil, fmt.Errorf("%s at HEAD: %w", v.Config.Lint.BaselinePath, err)
+	}
+	if head.Pages == nil {
+		head.Pages = map[string]lint.PageBaseline{}
+	}
+
+	if disk == nil {
+		return nil, fmt.Errorf("%s exists at HEAD but is missing on disk: restore it (e.g. `git checkout HEAD -- %s`) before writing a fresh baseline", v.Config.Lint.BaselinePath, v.Config.Lint.BaselinePath)
+	}
+
+	if exceeds, p, code, diskVal, headVal := lint.ExceedsBaseline(disk, &head); exceeds {
+		return nil, fmt.Errorf("%s on disk has %s %s=%d, higher than %d committed at HEAD: revert manual edits to the baseline before writing it", v.Config.Lint.BaselinePath, p, code, diskVal, headVal)
+	}
+
+	return &head, nil
+}
+
+// isGitRepo reports whether root is inside a git working tree.
+func isGitRepo(root string) bool {
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// gitShowAtHEAD returns the content of relPath as committed at HEAD. It
+// errors (distinctly from I/O errors, but callers here only need "not
+// found or no HEAD yet") when the path is not tracked at HEAD.
+func gitShowAtHEAD(root, relPath string) ([]byte, error) {
+	cmd := exec.Command("git", "show", "HEAD:"+relPath)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (a *app) renderLint(res *lint.Result, showWarnings bool) {

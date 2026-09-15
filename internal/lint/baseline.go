@@ -98,6 +98,36 @@ type GrowthRefusal struct {
 	New  int
 }
 
+// ExceedsBaseline reports whether disk has, for any page/code, a value
+// strictly greater than head's — i.e. whether the on-disk baseline file was
+// hand-edited upward relative to head. Used by `lint --write-baseline`
+// (DESIGN.md §6.1a) to refuse computing growth against a tampered file when
+// head (the committed baseline at HEAD) is available. Returns the first
+// offending path/code/values found, in sorted path order, for the error
+// message.
+func ExceedsBaseline(disk, head *Baseline) (exceeds bool, path string, code diag.Code, diskVal, headVal int) {
+	paths := make([]string, 0, len(disk.Pages))
+	for p := range disk.Pages {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	for _, p := range paths {
+		d := disk.Pages[p]
+		h := head.Pages[p] // zero value if absent from head
+		if d.TL006 > h.TL006 {
+			return true, p, diag.TL006EntryFormat, d.TL006, h.TL006
+		}
+		if d.TL008 > h.TL008 {
+			return true, p, diag.TL008PartialDate, d.TL008, h.TL008
+		}
+		if d.PG002Tokens > h.PG002Tokens {
+			return true, p, diag.PG002CompiledTruthSize, d.PG002Tokens, h.PG002Tokens
+		}
+	}
+	return false, "", "", 0, 0
+}
+
 // MergeBaseline reconciles a freshly recomputed baseline (fresh) against the
 // previously written one (old) for `lint --write-baseline` (DESIGN.md §6.1a,
 // Peep's 2026-09-15 decision on `--write-baseline` growth). old == nil means
