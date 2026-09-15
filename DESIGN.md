@@ -236,10 +236,12 @@ lint:
 
 The defaults equal Peep's vault, which therefore needs no config file (ship
 one anyway for clarity). `me-template` has the same top-level layout
-(`wiki me now archive`) but no Timeline convention in its templates. The
-defaults therefore work there too: pages without a Timeline simply produce
-no TL findings. Whether me-template adopts the Timeline convention is open
-question Q5.
+(`wiki me now archive`); its templates currently carry no Timeline
+convention. Peep's decision (2026-09-15, answers Q5 in §15): me-template
+adopts the Timeline convention too — a change to its templates, not to this
+binary, since the defaults already handle a vault with Timelines with no
+config needed (and would have handled the no-Timeline case just as well:
+pages without one simply produce no TL findings).
 
 ### 4.2 Root discovery (`vault.Open(flagRoot, start)`)
 
@@ -919,9 +921,10 @@ Location: `testdata/golden/<case>/`. Each case holds:
 The harness runs `cli.Execute` in-process. `go test ./... -update` rewrites
 the `want.*` files.
 
-**Fixture content is synthetic only.** This repo is shareable and the real
-vault is candid, so never copy real vault pages or entries into `testdata/`.
-Reproduce the real shapes with invented text:
+**Fixture content is synthetic only.** The repo is private (§15 Q3), but
+that doesn't relax this: the real vault is candid, so never copy real vault
+pages or entries into `testdata/`. Reproduce the real shapes with invented
+text:
 
 - hard-wrapped entries with 2-space continuation lines;
 - month-only, `2x` and range dates;
@@ -1211,9 +1214,17 @@ creating the GitHub remote, and adding commands beyond §3.1.
   long as it doesn't grow past its baselined token count; growing past it
   is an error. This keeps the pressure (don't make it worse) without
   blocking every unrelated edit on a page U6 hasn't reached yet.
-- **Q3 — Private repo vs. shareable.** Still open; unchanged by fix-round A.
+- **Q3 — Private repo vs. shareable. Answered 2026-09-15.** The repo stays
+  private. That doesn't relax §10.2's fixture rule: golden vaults and
+  `internal/timeline/testdata/date-keys.json` stay fully synthetic
+  regardless — no real names, brands, amounts or date lists copied out of
+  the vault, private repo or not.
 - **Q4 — `--touch` date. Answered 2026-09-15.** Today, unconditionally —
   see §8.5. Not the entry's date: `--touch` records "this page was worked
   on today", independent of which date the new Timeline entry itself
   carries (an entry can legitimately be backdated).
-- **Q5 — me-template convention.** Still open; unchanged by fix-round A.
+- **Q5 — me-template convention. Answered 2026-09-15.** `me-template`
+  adopts the Timeline convention: its page templates get a `## Timeline`
+  section like the main vault's, rather than staying convention-free. This
+  is a change to `me-template`'s own templates, not to this binary — the
+  built-in defaults (§4.1) already handle it with no config needed.
