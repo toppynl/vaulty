@@ -27,3 +27,9 @@ lint:
     heading_keywords: ["agent log"]  # heading text prefix (case-insensitive)
   severity: {}                  # per-code override, e.g. {TL006: error, TL008: off}
   baseline_path: .vaulty-baseline.json  # ratchet file (§6.1a); write/update via `lint --write-baseline`
+  overrides: []                 # per-path severity/ratchet exemptions (§6.1a); example:
+  # overrides:
+  #   - paths: ["now/tracking/**"]     # a work-log layer, not compiled knowledge
+  #     ratchet:
+  #       TL006: false                 # never baselined; stays a plain warning forever
+  #       TL008: false

@@ -48,6 +48,28 @@ type Lint struct {
 	// reads the ratchet baseline from (DESIGN.md §6.1a). Resolved relative
 	// to the vault root. Ratchet is inactive when this file doesn't exist.
 	BaselinePath string `yaml:"baseline_path" json:"baseline_path"`
+	// Overrides applies severity and/or ratchet exemptions to pages
+	// matching Paths, layered on top of Severity/the baseline (DESIGN.md
+	// §6.1a "per-path overrides"). Generic — not specific to any one path —
+	// so a vault can e.g. keep TL006/TL008 as warnings on its own working
+	// layer (now/tracking/**) without ever feeding those findings into the
+	// ratchet baseline.
+	Overrides []Override `yaml:"overrides" json:"overrides"`
+}
+
+// Override is one glob-scoped exemption (DESIGN.md §6.1a). Severity works
+// exactly like the top-level Lint.Severity map, but only for paths matching
+// Paths. Ratchet, keyed by diag code (e.g. "TL006"), set to false, excludes
+// that code entirely from the ratchet for matching paths: BuildBaseline
+// never records debt for it there, applyRatchet never promotes it to error
+// there, and the vault-mode stale-baseline count never counts it there —
+// the code's default severity (warning, unless Severity above overrides it)
+// applies unconditionally instead. Absent or true is the default: ratchet
+// applies normally.
+type Override struct {
+	Paths    []string          `yaml:"paths" json:"paths"`
+	Severity map[string]string `yaml:"severity" json:"severity"`
+	Ratchet  map[string]bool   `yaml:"ratchet" json:"ratchet"`
 }
 
 type PageChecks struct {
@@ -129,6 +151,18 @@ func (c *Config) Validate() error {
 		case "error", "warning", "off":
 		default:
 			return fmt.Errorf("lint.severity.%s %q: want error, warning or off", code, sev)
+		}
+	}
+	for i, ov := range c.Lint.Overrides {
+		if len(ov.Paths) == 0 {
+			return fmt.Errorf("lint.overrides[%d].paths must not be empty", i)
+		}
+		for code, sev := range ov.Severity {
+			switch sev {
+			case "error", "warning", "off":
+			default:
+				return fmt.Errorf("lint.overrides[%d].severity.%s %q: want error, warning or off", i, code, sev)
+			}
 		}
 	}
 	return nil

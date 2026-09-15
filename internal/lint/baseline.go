@@ -7,9 +7,29 @@ import (
 	"os"
 	"sort"
 
+	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/vault"
 )
+
+// ratchetDisabled reports whether a `lint.overrides` entry (DESIGN.md
+// §6.1a "per-path overrides") switches the ratchet off for code on path:
+// matching path against every override, in order, the last explicit
+// `ratchet.<code>` setting wins. No matching override, or none mentioning
+// code, leaves the ratchet on (the default) — matching config.Override's
+// own doc comment.
+func ratchetDisabled(overrides []config.Override, path string, code diag.Code) bool {
+	disabled := false
+	for _, ov := range overrides {
+		if !vault.MatchAny(ov.Paths, path) {
+			continue
+		}
+		if v, ok := ov.Ratchet[string(code)]; ok {
+			disabled = !v
+		}
+	}
+	return disabled
+}
 
 // PageBaseline is the accepted (ratcheted) debt for one page (DESIGN.md
 // §6.1a): the TL006/TL008 finding counts and the PG002 token count last
@@ -79,7 +99,7 @@ func BuildBaseline(v *vault.Vault, files []string) (*Baseline, error) {
 			return nil, err
 		}
 		pageChecksApply := vault.MatchAny(pc.Paths, rel)
-		n006, n008, tokens := pageDebtCounts(p, pageChecksApply, pc)
+		n006, n008, tokens := pageDebtCounts(p, pageChecksApply, pc, v.Config.Lint.Overrides)
 		if n006 > 0 || n008 > 0 || tokens > 0 {
 			b.Pages[rel] = PageBaseline{TL006: n006, TL008: n008, PG002Tokens: tokens}
 		}
@@ -198,7 +218,7 @@ func MergeBaseline(old, fresh *Baseline, acceptGrowth bool) (*Baseline, []Growth
 // current count/tokens exceed the baseline (DESIGN.md §6.1a). baseline == nil
 // leaves diags untouched (ratchet inactive). It is a no-op for every other
 // code.
-func applyRatchet(diags []diag.Diag, path string, baseline *Baseline) []diag.Diag {
+func applyRatchet(diags []diag.Diag, path string, baseline *Baseline, overrides []config.Override) []diag.Diag {
 	if baseline == nil {
 		return diags
 	}
@@ -217,8 +237,8 @@ func applyRatchet(diags []diag.Diag, path string, baseline *Baseline) []diag.Dia
 	// the Diag; the caller (checkPageHygiene) applies the PG002 ratchet
 	// directly via pg002Severity, where the token count is already in hand.
 
-	grew006 := n006 > bp.TL006
-	grew008 := n008 > bp.TL008
+	grew006 := n006 > bp.TL006 && !ratchetDisabled(overrides, path, diag.TL006EntryFormat)
+	grew008 := n008 > bp.TL008 && !ratchetDisabled(overrides, path, diag.TL008PartialDate)
 	if !grew006 && !grew008 {
 		return diags
 	}
