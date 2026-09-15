@@ -10,5 +10,5 @@ body
 
 ## Timeline
 
-- **2026-08-01** | Peep — old.
-- **2026-08-20** | Peep — new.
+- **2026-08-01** | Robin — old.
+- **2026-08-20** | Robin — new.

@@ -1,66 +1,58 @@
 #!/usr/bin/env node
 // Regenerates internal/timeline/testdata/date-keys.json: the oracle's
-// parseDateToken() result for every distinct date token used in the vault's
-// Timeline entries, plus a few hand-picked edge cases. Run once (or after a
-// new date form appears in the vault); date_test.go asserts Go's ParseDate
-// against the committed file.
+// parseDateToken() result for a synthetic list of date tokens covering every
+// form and edge case in §5.4, run against the oracle so Go's ParseDate can be
+// checked for parity with it. The token list below is hand-written and
+// synthetic — it is never read from the vault (DESIGN.md §10.1/§15 Q3:
+// fixtures stay synthetic even though the repo itself is private).
 //
-// Usage: node scripts/parity/date-keys.mjs [vaultRoot] [outFile]
+// Usage: node scripts/parity/date-keys.mjs [outFile]
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const oracleLibPath = process.env.ORACLE_LIB || '/var/www/personal/me/scripts/lib/timeline.mjs';
-const { findTimelineBlocks, parseDateToken } = await import(pathToFileURL(oracleLibPath).href);
+const { parseDateToken } = await import(pathToFileURL(oracleLibPath).href);
 
-const root = path.resolve(process.argv[2] || '/var/www/personal/me');
-const outFile = path.resolve(process.argv[3] || 'internal/timeline/testdata/date-keys.json');
-const dirs = ['wiki', 'me', 'now', 'archive'];
+const outFile = path.resolve(process.argv[2] || 'internal/timeline/testdata/date-keys.json');
 
-function findMdFiles(dir) {
-  const files = [];
-  if (!fs.existsSync(dir)) return files;
-  (function walk(d) {
-    for (const entry of fs.readdirSync(d)) {
-      if (entry.startsWith('.')) continue;
-      const p = path.join(d, entry);
-      const st = fs.statSync(p);
-      if (st.isDirectory()) walk(p);
-      else if (entry.endsWith('.md')) files.push(p);
-    }
-  })(dir);
-  return files;
-}
-
-const tokens = new Set();
-const entryRe = /^- \*\*([^*]+)\*\*/;
-for (const filePath of dirs.flatMap((d) => findMdFiles(path.join(root, d)))) {
-  const content = fs.readFileSync(filePath, 'utf8');
-  for (const blk of findTimelineBlocks(content)) {
-    const bodyText = content.slice(blk.bodyStart, blk.bodyEnd);
-    for (const line of bodyText.split('\n')) {
-      const m = line.match(entryRe);
-      if (m) tokens.add(m[1]);
-    }
-  }
-}
-
-// Edge cases not guaranteed to be present in the vault today.
-for (const t of [
-  '2026-08-0x',
-  '2026-08-3x',
-  '2026-09-10/1',
-  '2026-09-9/12',
-  'junk',
-  'juli/augustus 2026',
-  '2026-13-01',
+// Synthetic tokens covering every form and edge case in DESIGN.md §5.4:
+// plain day dates across several months/years, month-only, the NL
+// "(heel maand)" suffix, decade forms (0x/2x/3x), day-range forms (2-digit
+// and 1-digit second day), a month-range form, invalid month/day numbers,
+// an unparseable NL month-name token, junk, and the empty string.
+const tokens = [
   '',
-]) {
-  tokens.add(t);
-}
+  'junk',
+  'februari/maart 2025',
+  '2022-04/05',
+  '2023-11',
+  '2023-11 (heel maand)',
+  '2024-01-05',
+  '2024-01-19',
+  '2024-02-02',
+  '2024-06-30',
+  '2024-12-24',
+  '2025-01',
+  '2025-01-0x',
+  '2025-01-1x',
+  '2025-02-2x',
+  '2025-02-3x',
+  '2025-02-30',
+  '2025-03-14',
+  '2025-03-14/15',
+  '2025-03-14/1',
+  '2025-04-01/2',
+  '2025-05',
+  '2025-13-01',
+  '2025-13',
+  '2026-01-09',
+  '2026-02-17',
+  '2026-02-9/12',
+];
 
 const out = {};
-for (const t of [...tokens].sort()) {
+for (const t of tokens) {
   out[t] = parseDateToken(t);
 }
 
