@@ -3,6 +3,8 @@ package cli
 import (
 	"io"
 	"os"
+
+	"golang.org/x/term"
 )
 
 // stdinIsTTY reports whether r is an interactive terminal, used to gate
@@ -10,8 +12,12 @@ import (
 // human-typed decision, never something a script or an agent-invoked
 // subprocess can trigger just because it names a plain flag that
 // `Bash(vaulty:*)` already allows. Anything without a file descriptor
-// (e.g. the bytes.Buffer the golden test harness feeds as stdin) or whose
-// descriptor is not a character device is treated as non-interactive.
+// (e.g. the bytes.Buffer the golden test harness feeds as stdin), or whose
+// descriptor is a pipe, redirected file, or another non-terminal character
+// device (notably `/dev/null`, which *is* a character device but is not a
+// terminal — a plain os.ModeCharDevice check would wrongly accept it), is
+// treated as non-interactive. term.IsTerminal does the real ioctl-based
+// check (TCGETS/TIOCGETA) instead of guessing from the file mode.
 //
 // Injectable two ways: callers pass a.stdin, so tests exercise the refusal
 // path by construction (a bytes.Buffer never reports true); and
@@ -30,13 +36,5 @@ func stdinIsTTY(r io.Reader) bool {
 	if !ok {
 		return false
 	}
-	f := os.NewFile(fd.Fd(), "stdin")
-	if f == nil {
-		return false
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(fd.Fd()))
 }
