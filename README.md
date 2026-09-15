@@ -19,6 +19,7 @@ vault's Claude Code setup (hook, permission allowlist, skill snippets).
 
 ```bash
 vaulty timeline lint [paths...]         # check format + page hygiene
+vaulty timeline lint --write-baseline   # recompute the TL006/TL008/PG002 ratchet baseline
 vaulty timeline read <page> [--timeline] [--since D] [--last N]
 vaulty timeline append <page> "- **YYYY-MM-DD** | source — what" [--touch] [--dry-run]
 ```
@@ -38,9 +39,9 @@ go test ./...
 Golden CLI tests live in `internal/cli/testdata/golden/`; `go test ./... -update`
 regenerates the `want.*` files after an intentional behavior change.
 
-The vault round-trip check (`scripts/parity/roundtrip_test.go`) and the
-optional Node-oracle dumper (`scripts/parity/`) need a local copy of the
-real vault and are not part of `go test ./...` in CI — see DESIGN.md §10.3.
+The vault round-trip check (`scripts/parity/roundtrip_test.go`, package
+`parity`) needs a local copy of the real vault (`VAULTY_PARITY_ROOT=...`)
+and is not part of `go test ./...` in CI — see DESIGN.md §10.3.
 
 ## Release
 
