@@ -547,6 +547,14 @@ entry at all (adding one would be a no-op: an absent page's implicit `{0,0,0}`
 baseline already tolerates zero findings), which keeps the file limited to
 pages that actually carry debt.
 
+**Stale baseline (shrink gap).** Because shrinking is free and never
+enforced, nothing forces a re-run of `--write-baseline` after a page
+improves — its baseline entry can sit above its current debt indefinitely.
+Vault-mode `lint` counts and reports this: `count baseline-stale N (pages
+below baseline; run --write-baseline to tighten)`, shown whenever a baseline
+file is active (even at `N=0`, mirroring the always-shown PG001/PG002 count
+lines). It is informational only — it never affects severity or exit code.
+
 **PG001 work material.** Applies only when the path matches
 `lint.page_checks.paths`. Scan the compiled-truth span line by line, skipping
 lines inside fenced code blocks (between lines starting with ```` ``` ```` or

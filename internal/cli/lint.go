@@ -109,6 +109,9 @@ func (a *app) renderLint(res *lint.Result, showWarnings bool) {
 	if res.Mode == lint.ModeVault {
 		fmt.Fprintf(a.stdout, "count PG001 work-material %d\n", res.Counts[diag.PG001WorkMaterial])
 		fmt.Fprintf(a.stdout, "count PG002 compiled-truth-size %d\n", res.Counts[diag.PG002CompiledTruthSize])
+		if res.BaselineActive {
+			fmt.Fprintf(a.stdout, "count baseline-stale %d (pages below baseline; run --write-baseline to tighten)\n", res.StaleBaseline)
+		}
 	}
 	fmt.Fprintf(a.stderr, "%s: %d errors, %d warnings in %d files\n", name.Binary, res.Errors, res.Warnings, res.FilesChecked)
 }

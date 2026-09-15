@@ -36,6 +36,14 @@ type Result struct {
 	Counts       map[diag.Code]int `json:"counts"` // ModeVault: pages per PG code
 	Errors       int               `json:"errors"`
 	Warnings     int               `json:"warnings"`
+
+	// StaleBaseline counts pages (ModeVault only) whose current TL006/TL008/
+	// PG002 debt is strictly below their baseline entry — the ratchet's
+	// shrink-gap (DESIGN.md §6.1a): shrinking is free and never enforced, so
+	// nothing forces a re-run of --write-baseline to tighten it back up.
+	// Zero when the baseline file does not exist (BaselineActive false).
+	StaleBaseline  int  `json:"stale_baseline,omitempty"`
+	BaselineActive bool `json:"-"`
 }
 
 // CheckPage returns all findings for one parsed page. pageChecks enables
@@ -119,6 +127,30 @@ func checkPageHygiene(p *timeline.Page, pc config.PageChecks, path string, basel
 	return diags
 }
 
+// pageDebtCounts returns the current TL006/TL008 finding counts and the
+// PG002 token count (0 when tokens are within budget, or pageChecksApply is
+// false) for one already-parsed page. This is the exact triple the ratchet
+// baseline stores and compares against (DESIGN.md §6.1a) — BuildBaseline and
+// the vault-mode stale count both derive from it, so they can never drift
+// apart from what CheckPage/checkPageHygiene actually find.
+func pageDebtCounts(p *timeline.Page, pageChecksApply bool, pc config.PageChecks) (n006, n008, tokens int) {
+	for _, d := range p.AllDiags() {
+		switch d.Code {
+		case diag.TL006EntryFormat:
+			n006++
+		case diag.TL008PartialDate:
+			n008++
+		}
+	}
+	if pageChecksApply {
+		text := string(p.Doc.Src[p.CompiledTruth.Start:p.CompiledTruth.End])
+		if t := EstimateTokens(len(text)); t > pc.CompiledTruthMaxTokens {
+			tokens = t
+		}
+	}
+	return
+}
+
 func tableHasKeywordCell(headerLine string, keywords []string) bool {
 	cell := strings.Trim(headerLine, " \t")
 	cell = strings.Trim(cell, "|")
@@ -166,6 +198,7 @@ func Run(v *vault.Vault, files []string, opt Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	res.BaselineActive = baseline != nil
 
 	for _, rel := range files {
 		p, err := parseFile(v, rel)
@@ -175,6 +208,16 @@ func Run(v *vault.Vault, files []string, opt Options) (*Result, error) {
 		res.FilesChecked++
 
 		pageChecksApply := vault.MatchAny(v.Config.Lint.PageChecks.Paths, rel)
+
+		if opt.Mode == ModeVault && baseline != nil {
+			if bp, ok := baseline.Pages[rel]; ok {
+				n006, n008, tokens := pageDebtCounts(p, pageChecksApply, v.Config.Lint.PageChecks)
+				if n006 < bp.TL006 || n008 < bp.TL008 || (pageChecksApply && tokens < bp.PG002Tokens) {
+					res.StaleBaseline++
+				}
+			}
+		}
+
 		all := CheckPage(p, v, pageChecksApply, baseline)
 		for i := range all {
 			all[i].Path = rel
