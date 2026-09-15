@@ -7,5 +7,6 @@
     "PG002": 0
   },
   "errors": 0,
-  "warnings": 0
+  "warnings": 0,
+  "stale_baseline": 0
 }

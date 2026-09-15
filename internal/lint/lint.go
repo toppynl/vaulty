@@ -27,6 +27,12 @@ const (
 type Options struct {
 	Mode   Mode
 	Strict bool // warnings count as errors for the exit code
+
+	// FullVault marks a ModeVault run that covers the entire vault (no
+	// directory/path args, no --changed) rather than a subset of it. Only
+	// then can a baseline path absent from files be trusted as vanished
+	// (deleted/renamed) instead of merely outside the requested subset.
+	FullVault bool
 }
 
 type Result struct {
@@ -42,8 +48,19 @@ type Result struct {
 	// shrink-gap (DESIGN.md §6.1a): shrinking is free and never enforced, so
 	// nothing forces a re-run of --write-baseline to tighten it back up.
 	// Zero when the baseline file does not exist (BaselineActive false).
-	StaleBaseline  int  `json:"stale_baseline,omitempty"`
+	StaleBaseline  int  `json:"stale_baseline"`
 	BaselineActive bool `json:"-"`
+
+	// VanishedBaseline lists baseline paths (sorted) that carry debt but no
+	// longer exist in the current vault walk — deleted, or renamed to a
+	// path lint never visited. Each one is also counted in StaleBaseline:
+	// a page can only get more stale by disappearing, never less, since
+	// its "current" debt is implicitly zero and its baseline entry is
+	// nonzero by construction (DESIGN.md §6.1a, BuildBaseline). Distinct
+	// from an ordinary stale page (still on disk, just improved) because
+	// there is no current page to point an agent at — only
+	// --write-baseline (which drops it) or a manual rename fixes it.
+	VanishedBaseline []string `json:"vanished_baseline,omitempty"`
 }
 
 // CheckPage returns all findings for one parsed page. pageChecks enables
@@ -200,6 +217,11 @@ func Run(v *vault.Vault, files []string, opt Options) (*Result, error) {
 	}
 	res.BaselineActive = baseline != nil
 
+	seen := map[string]bool{}
+	for _, rel := range files {
+		seen[rel] = true
+	}
+
 	for _, rel := range files {
 		p, err := parseFile(v, rel)
 		if err != nil {
@@ -249,6 +271,18 @@ func Run(v *vault.Vault, files []string, opt Options) (*Result, error) {
 		} else {
 			res.Findings = append(res.Findings, all...)
 		}
+	}
+
+	if opt.Mode == ModeVault && opt.FullVault && baseline != nil {
+		vanished := make([]string, 0, len(baseline.Pages))
+		for p := range baseline.Pages {
+			if !seen[p] {
+				vanished = append(vanished, p)
+			}
+		}
+		sort.Strings(vanished)
+		res.VanishedBaseline = vanished
+		res.StaleBaseline += len(vanished)
 	}
 
 	if res.Findings == nil {

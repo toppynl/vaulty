@@ -1,0 +1,4 @@
+count PG001 work-material 0
+count PG002 compiled-truth-size 0
+count baseline-stale 1 (pages below baseline; run --write-baseline to tighten)
+  wiki/gone.md: no longer in the vault (deleted, or renamed and not repointed) — possible rename, or run --write-baseline to drop it

@@ -41,6 +41,7 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 
 	var mode lint.Mode
 	var files []string
+	fullVault := false
 
 	switch {
 	case o.changed != "":
@@ -56,13 +57,14 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 		}
 	default:
 		mode = lint.ModeVault
+		fullVault = true
 		files, err = v.Walk()
 		if err != nil {
 			return &ExitError{Code: ExitIO, Err: err}
 		}
 	}
 
-	res, err := lint.Run(v, files, lint.Options{Mode: mode, Strict: o.strict})
+	res, err := lint.Run(v, files, lint.Options{Mode: mode, Strict: o.strict, FullVault: fullVault})
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
@@ -240,6 +242,9 @@ func (a *app) renderLint(res *lint.Result, showWarnings bool) {
 		fmt.Fprintf(a.stdout, "count PG002 compiled-truth-size %d\n", res.Counts[diag.PG002CompiledTruthSize])
 		if res.BaselineActive {
 			fmt.Fprintf(a.stdout, "count baseline-stale %d (pages below baseline; run --write-baseline to tighten)\n", res.StaleBaseline)
+			for _, p := range res.VanishedBaseline {
+				fmt.Fprintf(a.stdout, "  %s: no longer in the vault (deleted, or renamed and not repointed) — possible rename, or run --write-baseline to drop it\n", p)
+			}
 		}
 	}
 	fmt.Fprintf(a.stderr, "%s: %d errors, %d warnings in %d files\n", name.Binary, res.Errors, res.Warnings, res.FilesChecked)
