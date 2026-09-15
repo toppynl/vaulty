@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -89,6 +90,18 @@ func Execute(version string, args []string, stdin io.Reader, stdout, stderr io.W
 // positional to avoid pflag misreading that entry as a flag cluster.
 var appendBoolFlags = map[string]bool{"--touch": true, "--dry-run": true}
 
+// isAppendBoolFlag reports whether a is one of appendBoolFlags, bare
+// ("--touch") or with an explicit value ("--touch=true", "--dry-run=false")
+// — pflag accepts both forms for a bool flag, and normalizeAppendArgs must
+// float either one ahead of the positionals the same way.
+func isAppendBoolFlag(a string) bool {
+	if appendBoolFlags[a] {
+		return true
+	}
+	name, _, hasEq := strings.Cut(a, "=")
+	return hasEq && appendBoolFlags[name]
+}
+
 // normalizeAppendArgs finds a "timeline append" invocation in args and
 // reorders the args after it so appendBoolFlags come first, in their
 // original relative order, followed by every other token (the positionals,
@@ -133,7 +146,7 @@ func normalizeAppendArgs(args []string) []string {
 			rest = append(rest, a)
 			continue
 		}
-		if !sawSeparator && appendBoolFlags[a] {
+		if !sawSeparator && isAppendBoolFlag(a) {
 			flags = append(flags, a)
 			continue
 		}
