@@ -1,0 +1,41 @@
+{
+  "path": "wiki/b.md",
+  "headings": [
+    {
+      "line": 5,
+      "level": 1,
+      "text": "B",
+      "lines": 23,
+      "bytes": 253
+    },
+    {
+      "line": 9,
+      "level": 2,
+      "text": "Background",
+      "lines": 9,
+      "bytes": 102
+    },
+    {
+      "line": 14,
+      "level": 3,
+      "text": "Background Detail",
+      "lines": 4,
+      "bytes": 44
+    },
+    {
+      "line": 18,
+      "level": 2,
+      "text": "Usage",
+      "lines": 6,
+      "bytes": 32
+    },
+    {
+      "line": 24,
+      "level": 2,
+      "text": "Timeline",
+      "lines": 4,
+      "bytes": 97
+    }
+  ],
+  "diags": null
+}
