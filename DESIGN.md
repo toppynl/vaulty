@@ -1469,9 +1469,10 @@ match.
 All five are always full findings in both files and vault mode — unlike
 PG001/PG002 they are not expected to be noisy at vault scale (one hit per
 broken shard, not per legacy page), so there is no vault-mode count
-collapse and no baseline ratchet: the sharding convention is new enough
-that there is no legacy debt to grandfather, unlike PG002's oversized
-pages that predate the 3k-token rule.
+collapse and no SH-specific baseline ratchet: the sharding convention is
+new enough that there is no legacy debt to grandfather, unlike PG002's
+oversized pages that predate the 3k-token rule. SH004 is the one exception,
+in severity only — see "SH004 vs. PG002" below.
 
 **SH004 vs. PG002.** Both apply the identical token estimate and default
 threshold to the same compiled-truth span, and both fire on an oversized
@@ -1483,6 +1484,20 @@ shard-specific signal that a page *already inside* a shard needs to split
 further or shed history/work — a different next action worth its own line.
 `lint.severity: {SH004: off}` turns off the shard-specific one for a vault
 that finds it redundant with PG002.
+
+Because the two measure the exact same number for the exact same page,
+SH004's *severity* follows PG002's existing ratchet rather than keeping a
+second, SH-specific one: `checkShardChild` reads the page's baselined
+`pg002_tokens` (via the same `pg002Severity` PG002 itself calls) and
+downgrades SH004 to a warning under the identical condition — tokens at or
+below the baselined value. SH004 never writes its own baseline entry
+(`--write-baseline` only ever records `pg002_tokens`, driven by PG002's
+own `page_checks.paths` match); it only reads the one PG002 already
+maintains. Without a baseline (ratchet inactive) or without an entry for
+that page (never accepted as oversized), SH004 is an error, same as
+before. This keeps a child that's already been accepted as oversized via
+`--write-baseline` from flipping back to an error — and a `--hook` exit
+2 — purely because SH004 restates a number PG002 already downgraded.
 
 `lint.severity` and the per-path `severity` half of `lint.overrides` apply
 to SH001-SH005 exactly as they do to every other code (both are generic
@@ -1514,4 +1529,31 @@ there is nothing to exempt.
   `files` — since SH001/SH003 are about the directory's actual shape, not
   about which of its files happen to be part of the current lint run.
 - `lint --write-baseline` / `--check-baseline` are unaffected: SH001-SH005
-  carry no baseline entries (§16.3).
+  carry no baseline entries of their own (§16.3) — SH004 reads PG002's
+  entry for the same page at check time, but nothing about
+  `--write-baseline`/`--check-baseline` itself changes for SH004.
+- A hub-level finding (SH003) reached only through a child in scope — the
+  hub file itself is not among `files`, only one of its children is —
+  names that child in the message (`... (via child <path>)`), so a
+  `--hook`/`--changed` run on one child doesn't read as an unprompted hit
+  on an unrelated hub file.
+
+### 16.5 Link-target normalization (SH002/SH003)
+
+SH002 (does a child's `related:` name its hub) and SH003 (does the hub
+link each child) both compare `[[...]]` wikilink targets against a plain
+page name, but a real link can spell that target several ways: an
+escaped-pipe alias inside a markdown table cell (`[[x\|alias]]` — the pipe
+is escaped so it doesn't end the table cell, which otherwise leaves a
+trailing backslash on the captured target), a path-form link
+(`[[type/hub/x]]`), an explicit `.md` suffix (`[[x.md]]`), or different
+casing (`[[X]]`). `internal/lint.normalizeWikilinkTarget` is the single
+place that collapses all four to the same bare, lowercase name; both
+`wikilinkTargets` (SH003, hub → children) and `relatedListsHub` (SH002,
+child → hub) go through it, so the two directions can never disagree on
+what counts as the same link. `relatedField`'s own scan (finding the
+`related:` block in frontmatter) additionally treats a column-0 `- ` YAML
+list item as part of the block, not just indented or blank continuation
+lines — `related:` followed by an unindented list is valid YAML — and
+matches the `related:` key itself exactly (not `related_extra:` or any
+other key sharing the prefix).
