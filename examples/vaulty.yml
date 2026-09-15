@@ -1,5 +1,5 @@
 # .vaulty.yml — place at the vault root. Every key is optional; the values
-# below are the built-in defaults (Peep's vault layout). See DESIGN.md §4.
+# below are the built-in defaults (default vault layout). See DESIGN.md §4.
 version: 1
 
 # Content dirs, relative to the root. Vault-wide scans and page-name

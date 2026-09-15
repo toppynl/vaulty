@@ -121,7 +121,7 @@ func newTestVault(t *testing.T, root string) *Vault {
 
 func TestResolve(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "wiki", "systems", "toppy.md"), "# Toppy\n")
+	writeFile(t, filepath.Join(root, "wiki", "systems", "widget.md"), "# Widget\n")
 	writeFile(t, filepath.Join(root, "now", "priorities.md"), "# Priorities\n")
 	writeFile(t, filepath.Join(root, "wiki", "dup1", "acme.md"), "# Acme 1\n")
 	writeFile(t, filepath.Join(root, "wiki", "dup2", "acme.md"), "# Acme 2\n")
@@ -132,12 +132,12 @@ func TestResolve(t *testing.T) {
 		want    string
 		wantErr error
 	}{
-		{"toppy", "wiki/systems/toppy.md", nil},
-		{"[[toppy]]", "wiki/systems/toppy.md", nil},
-		{"[[toppy|Toppy display]]", "wiki/systems/toppy.md", nil},
-		{"[[toppy#section]]", "wiki/systems/toppy.md", nil},
-		{"wiki/systems/toppy.md", "wiki/systems/toppy.md", nil},
-		{"wiki/systems/toppy", "wiki/systems/toppy.md", nil},
+		{"widget", "wiki/systems/widget.md", nil},
+		{"[[widget]]", "wiki/systems/widget.md", nil},
+		{"[[widget|Widget display]]", "wiki/systems/widget.md", nil},
+		{"[[widget#section]]", "wiki/systems/widget.md", nil},
+		{"wiki/systems/widget.md", "wiki/systems/widget.md", nil},
+		{"wiki/systems/widget", "wiki/systems/widget.md", nil},
 		{"nope-not-here", "", ErrNotFound},
 		{"acme", "", ErrAmbiguous},
 	}
