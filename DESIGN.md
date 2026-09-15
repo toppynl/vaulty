@@ -131,7 +131,7 @@ vaulty [--vault DIR] [--json]
 │   └── append <page> "<entry>" [--touch] [--dry-run]
 ├── log
 │   ├── append <op> <title> [--body TEXT] [--date YYYY-MM-DD]
-│   ├── last   [--n N] [--op OP] [--since DATE]
+│   ├── last   [-n|--n N] [--op OP] [--since DATE]
 │   └── lint
 ├── config print                     (step 1: effective config + root + config path)
 └── version / --version
@@ -159,7 +159,7 @@ calls into the same `lint` package.
 | `--vault DIR` | Vault root. Beats everything else (§4.2). |
 | `--json` | One JSON document on stdout (schemas per command below). Diagnostics go into the JSON, never mixed into stdout. |
 | `VAULTY_ROOT` | Root override, below `--vault`. |
-| `VAULTY_TODAY=YYYY-MM-DD` | Pins "today" for `--touch`, future-date warnings and goldens. |
+| `VAULTY_TODAY=YYYY-MM-DD` | Pins "today" for `--touch`, `log append`, future-date warnings and goldens. Validated once, in `Execute` before any command runs: a set-but-invalid value (not a real `YYYY-MM-DD` date) exits 2 with `$VAULTY_TODAY: invalid date "<value>" (want YYYY-MM-DD)` rather than silently propagating a garbage "today" into whatever the command was about to do. |
 
 Output conventions:
 
@@ -890,9 +890,19 @@ agent to scan a large page's structure before deciding what to read next
 (`internal/doc.Headings`).
 
 Each heading's reported size is its whole section: from the heading line
-through the byte before the next heading of level ≤ its own, or EOF —
-nested sub-headings count towards their parent's size, matching `--section`
-below exactly.
+through the byte before the first of (a) the next heading of level ≤ its
+own, (b) a standalone `---` divider line, or (c) EOF — nested sub-headings
+count towards their parent's size, matching `--section` below exactly.
+The divider stop applies regardless of heading level: it closes *every*
+currently-open heading, not just ones at its own level, since it's the
+vault's own hard content boundary (the line directly above `## Timeline`,
+§1) — without it, a page's very first heading (level 1, with no later
+heading at level ≤ 1 to close it) would otherwise report a size running
+all the way through the Timeline block at the bottom of the file. A `---`
+inside a fenced code block is not a divider and doesn't count.
+`--headings` and `--section` don't otherwise know anything about Timeline
+semantics; this one rule exists purely to stop the divider from leaking
+into the section above it.
 
 Human output, one line per heading, tab-separated, no header row (kept
 terse like Timeline mode): `<line>\t<### text>\t<lines>\t<bytes>`, e.g.:
@@ -906,6 +916,10 @@ terse like Timeline mode): `<line>\t<### text>\t<lines>\t<bytes>`, e.g.:
 
 A page with no headings prints nothing (human) / an empty `headings` array
 (json), exit 0 — same best-effort contract as the rest of `read`.
+`--headings` does not combine with `--frontmatter` or `--max-bytes` (exit
+2 if either is given) — neither means anything for a heading listing, and
+staying silent about a flag that does nothing is worse than telling the
+caller their combination doesn't apply.
 
 ### 7.2 `--section <heading text>`
 
@@ -920,13 +934,29 @@ Background`, `--section "## Background"` and `--section "  Background  "`
 all match the same heading. Matching is exact and case-sensitive on the
 remaining text; the first match in file order wins when a vault has two
 identically-named headings (rare — same convention as page names being
-unique by convention, §3.3). No match: exit 2, `no such section: "<query>"`.
+unique by convention, §3.3; a golden fixture pins first-match-wins).
+
+No match: exit 2, with a suggestion instead of a bare "not found" whenever
+one is available (`sectionNotFoundError`, `internal/cli/read.go`) — an
+agent that got the heading text slightly wrong should not have to re-run
+`--headings` to find out why:
+
+1. an exact case-insensitive match (query differs from a real heading only
+   in case): `no such section: "background" (case-sensitive; did you mean
+   "Background"?)`;
+2. else any heading whose text contains the query, or vice versa,
+   case-insensitively, in file order, capped at 5: `no such section:
+   "Back" (closest matches: "B", "Background", "Background Detail")`;
+3. else the plain `no such section: "<query>"`.
 
 `--headings` and `--section` are mutually exclusive (exit 2 if both are
 given). `--section` combines with `--frontmatter` (frontmatter still prints
-first, in full) and with `--max-bytes` (§7.3); it does not combine with
-`--timeline`/`--since`/`--last` — those are ignored once `--section` is
-set, since a section is not the Timeline block.
+first, in full) and with `--max-bytes` (§7.3); it does **not** combine
+with `--timeline`/`--since`/`--last` (exit 2 if any is given alongside
+`--section`) — those flags mean something specific to the Timeline block,
+and a section is not that block, so silently ignoring them (the original
+behavior) risked masking a caller's mistaken assumption that they'd
+somehow narrow the section output.
 
 `--json`: adds `"section":{"line":9,"heading":"Background","text":"..."}`
 in place of `compiled_truth`/`entries`.
@@ -1667,9 +1697,15 @@ log rather than per-page history. Header format, fixed:
 <body>            (optional, free-form, any number of lines)
 ```
 
-Newest entry at the bottom (append-only, matching the real vault's
-`log.md`). Implemented in `internal/vaultlog` (parse/format/validate,
-package-level, no vault dependency) plus `internal/cli/log.go` +
+`log append` always adds at the end of the file (append-only). That is
+**not** the same as "chronological order": the real vault's `log.md` has
+~41 points where a later-in-file entry's date is earlier than the entry
+before it (added by hand or other tooling, not exclusively by this
+command). So file order must never be assumed to equal date order — `log
+last` sorts before taking the tail (§17.3) and `log lint` reports the
+gap as a warning (§17.4), rather than either command silently trusting
+file position. Implemented in `internal/vaultlog` (parse/format/validate/
+sort, package-level, no vault dependency) plus `internal/cli/log.go` +
 `internal/cli/logrun.go` (command tree + CLI glue, mirroring the
 `timeline` command's file split).
 
@@ -1703,6 +1739,15 @@ line-then-bullets bodies parse as one `Body` string regardless of how many
 lines or what markdown they use; only `log append` itself is limited to a
 single body line (§17.2).
 
+`vaultlog.FindOutOfOrder(entries)` is a separate pass over `Parse`'s
+well-formed entries (never mixed into `Parse` itself, or into
+`Malformed` — a date going backwards is not a format defect, the heading
+parses fine): it reports every `i` where `entries[i].Date <
+entries[i-1].Date`, `{Line, Date, PrevLine, PrevDate}`. Consumed by `log
+lint` (§17.4). `vaultlog.SortByDate(entries)` stable-sorts a copy by
+`Date` ascending, keeping file order among entries sharing a date; `log
+last` (§17.3) uses it before applying `--n`.
+
 ### 17.2 `log append <op> <title> [--body TEXT] [--date YYYY-MM-DD]`
 
 `--date` defaults to today (`$VAULTY_TODAY` or the local date, like
@@ -1710,48 +1755,83 @@ single body line (§17.2).
 the command exits 2 (usage — same class of error as `timeline read
 --since` with a bad date).
 
-`op`, `title` and `--body` (when given) are each validated by
-`vaultlog.ValidateField` before anything is written — **rejected**, never
-silently stripped, since silently mutating what an agent asked to write is
-worse than a clear refusal it can retry:
+`op` and `title` are trimmed, then `op`, `title` and `--body` (when given)
+are each validated by `vaultlog.ValidateField` before anything is
+written — **rejected**, never silently stripped further, since silently
+mutating what an agent asked to write is worse than a clear refusal it can
+retry:
 
 - non-empty after trimming;
 - no `\n` or `\r` anywhere — a newline inside any of these three fields
   would corrupt the one-line heading format (or, for `--body`, break the
   "single body line" contract §17 promises for entries this command
   writes) on the very next parse;
-- `op` additionally must not contain the literal `" | "` — that exact
-  sequence is the heading's real separator, so allowing it in `op` would
-  make the written entry unparseable as the op the caller intended (a bare
-  `|` without surrounding spaces, as in §17.1's `decision|update` example,
-  is still allowed).
+- `op` additionally must not contain `|` at all, bare or spaced — even a
+  bare `|` (tolerated when *reading* a legacy entry, §17.1's
+  `decision|update` example) would make an op this command just wrote
+  ambiguous with the heading's real separator on every future parse. This
+  is intentionally stricter than what `Parse` accepts: append is strict,
+  read stays lenient — the same asymmetry Timeline `append`/`lint` already
+  have (§8.1 vs. the ratchet, §6.1a);
+- `body` additionally must not contain a line that (trimmed) starts with
+  `#` — such a line parses as its own `"## [...] ..."` heading once
+  written (or, for any single `#`, at least *looks* like one to a human
+  skimming the file), so a body like `"## [2026-01-02] fake | injected"`
+  would forge a second, unrelated-looking log entry inside the body of the
+  one the caller asked for, rather than staying inside it.
 
 A validation failure exits 3 (refused — same code timeline `append` uses
 for `ValidateEntry` failures, §8.1) and writes nothing.
 
-On success: the file (created, with parent directories, if it doesn't
-exist yet) gets the new entry appended via `vaultlog.Append`, separated
-from any existing content by exactly one blank line (the tool's own
-convention going forward; it does not rewrite the real vault's existing
-mix of blank/no-blank separators between entries). Human output: `appended
-<path>:<line>\n` to stdout. `--json`: `{"path":...,"line":...,"date":...,
-"op":...,"title":...}`.
+**Write mechanism.** Unlike Timeline `append` (§8.7, tmpfile + rename —
+`atomicWrite`), `log append` never rewrites or renames the file: renaming
+a new file over `log.md` would silently replace a symlinked `log.md` with
+a plain file (breaking whatever the symlink pointed at), and a full
+read-modify-write invites two concurrent appenders computing the same
+"end of file" offset and clobbering each other. Instead
+(`internal/cli/logrun.go`'s `appendLogEntry`): open (creating if needed)
+with `O_RDWR|O_CREATE`, take an exclusive `flock` for the rest of the
+call, `Stat` for the current size, read the existing bytes only to work
+out the separator via `vaultlog.SeparatorFor` (0, 1 or 2 newlines,
+depending on the current ending) — then `WriteAt` *only*
+`separator + vaultlog.Format(...)` at that size offset. Existing bytes on
+disk are never read back and rewritten, matching the append-only
+guarantee Timeline blocks already have (§8.4: "existing bytes are never
+changed, only added to") — a crash mid-write can corrupt at most the
+entry being added, never history already on disk. The flock also
+serializes concurrent appenders so two writers never compute the same
+offset.
 
-### 17.3 `log last [--n N] [--op OP] [--since DATE]`
+On success: parent directories are created if needed, then the entry is
+appended as above. Human output: `appended <path>:<line>\n` to stdout,
+where `<line>` is computed from the pre-append byte/newline counts plus
+the separator's newline count (no re-read/re-parse needed — see the
+comment beside `appendLogEntry`). `--json`:
+`{"path":...,"line":...,"date":...,"op":...,"title":...}`.
+
+### 17.3 `log last [-n|--n N] [--op OP] [--since DATE]`
 
 Best-effort and scriptable, like `timeline read`: parses the whole file,
 prints one stderr warning per malformed heading found (`<path>:<line>:
 malformed log entry, skipped: <reason>`) and otherwise ignores them — never
 a fatal error. A missing log file behaves as zero entries (not an error);
 an unreadable one (permission, or a directory at that path) is exit 4 (I/O).
+`-n`/`--n` (both forms; `-n` is the short flag) accepts the same value.
 
-Filters apply before the `--n` cutoff, in file order: `--op OP` keeps exact
-(case-sensitive) op matches; `--since DATE` (same `YYYY-MM-DD`/`YYYY-MM`
-parsing as `timeline read --since`) keeps `Date >= since` by plain ISO
-string comparison (valid since the format is fixed-width `YYYY-MM-DD`).
-`--n` (default 10, like the CLI table's example) then keeps the last N of
-what's left — `0` means all, matching `timeline read --last`'s convention;
-`N < 0` is a usage error (exit 2).
+Filters apply first: `--op OP` keeps exact (case-sensitive) op matches;
+`--since DATE` (same `YYYY-MM-DD`/`YYYY-MM` parsing as `timeline read
+--since`) keeps `Date >= since` by plain ISO string comparison (valid
+since the format is fixed-width `YYYY-MM-DD`). The result is then
+**stable-sorted by date** (`vaultlog.SortByDate`, ascending, file order
+preserved among entries sharing a date) **before** `--n` takes the tail —
+file order is not reliably chronological (§17, the ~41 out-of-order
+points in the real vault), so skipping this sort would make "last N" mean
+"N entries nearest the end of the file", not "N most recent by date"; a
+query like `--op lint -n 1` needs the latter to return the actual most
+recent `lint` entry rather than whichever happened to be filed last.
+`--n` (default 10) keeps the last N after sorting — `0` means all,
+matching `timeline read --last`'s convention; `N < 0` is a usage error
+(exit 2).
 
 Human output reprints each kept entry exactly as `vaultlog.Format` would
 write it (heading + body), blank-line-separated — log entries are read as
@@ -1764,14 +1844,30 @@ for their detail, §17.4).
 
 ### 17.4 `log lint`
 
-Reports every malformed heading in the log file, human mode one per stdout
-line (`<path>:<line>: malformed: <reason>: <text>`, mirroring `timeline
-lint`'s `path:line: CODE severity: message` shape, §6.3) or `--json`
-(`{"path":...,"malformed":[{"line":...,"reason":...,"text":...}]}`).
-Exit 1 if any malformed heading was found (`ExitFindings`, same convention
-as `timeline lint`), exit 0 otherwise — including when the file doesn't
-exist yet. A separate subcommand rather than folding this into `log last`
+Reports two independent kinds of finding, both from one parse of the log
+file:
+
+- **malformed headings** (`vaultlog.Parse`'s `Malformed`, §17.1) — a
+  format defect;
+- **out-of-order entries** (`vaultlog.FindOutOfOrder`, §17.1) — a
+  well-formed entry whose date is earlier than the one before it in the
+  file. Expected to fire occasionally on the real vault's history (§17);
+  this is a warning about file/date order, never treated as corruption or
+  folded into `Malformed`.
+
+Human mode, one line per finding on stdout: malformed as `<path>:<line>:
+malformed: <reason>: <text>` (mirroring `timeline lint`'s `path:line: CODE
+severity: message` shape, §6.3); out-of-order as `<path>:<line>:
+out-of-order: entry dated <date> appears after <prev_date> (line
+<prev_line>)`. `--json`: `{"path":...,
+"malformed":[{"line":...,"reason":...,"text":...}],
+"out_of_order":[{"line":...,"date":...,"prev_line":...,"prev_date":...}]}`.
+
+Exit 1 if either list is non-empty (`ExitFindings`, same convention as
+`timeline lint`), exit 0 otherwise — including when the file doesn't exist
+yet. A separate subcommand rather than folding this into `log last`
 because `last`'s job is best-effort reading (never fail the read over data
-quality) while `lint`'s job is exactly the opposite: surface every
-malformed heading as the primary result, for a periodic vault-health pass
-(alongside `timeline lint`) rather than every `log last` call.
+quality — it already corrects for out-of-order dates itself, §17.3) while
+`lint`'s job is exactly the opposite: surface every finding as the primary
+result, for a periodic vault-health pass (alongside `timeline lint`)
+rather than every `log last` call.

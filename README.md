@@ -27,7 +27,7 @@ vaulty timeline read <page> [...] --max-bytes N        # cap the printed content
 vaulty timeline append <page> "- **YYYY-MM-DD** | source — what" [--touch] [--dry-run]
 
 vaulty log append <op> <title> [--body TEXT] [--date YYYY-MM-DD]  # appends to log.md
-vaulty log last [--n N] [--op OP] [--since D]                     # most recent entries
+vaulty log last [-n N] [--op OP] [--since D]                      # most recent entries
 vaulty log lint                                                   # report malformed entries
 ```
 
