@@ -653,6 +653,26 @@ disk copy is higher on any page/code — without writing anything. Meant to
 run from a `pre-commit` hook, after staging, as the cheap independent
 second check docs/claude-code.md §8c recommends.
 
+**`--check-baseline --staged` (hardening round 4, 2026-09-15).** Plain
+`--check-baseline` diffs the *working copy* against HEAD, not the index.
+That's a gap in a pre-commit hook: staging a grown baseline and then
+restoring the file on disk (`git add .vaulty-baseline.json` with the grown
+value, then overwriting it back to the old value without re-adding) passes
+`--check-baseline` with exit 0 while the commit itself still ships the
+grown value from the index. `--staged` makes the comparison source the git
+index instead (`git show :./<baseline_path>`, i.e. `resolveWriteBaselineOld`
+called with `staged=true`), falling back to the working copy when the path
+isn't staged at all — matching what a commit will actually contain rather
+than whatever happens to sit on disk when the hook runs. `--write-baseline`
+never takes `--staged`: it writes the working copy, so that's what it must
+diff against. docs/claude-code.md §8c's pre-commit snippet always runs
+`--check-baseline --staged` unconditionally now, rather than first
+`grep`-gating on `git diff --cached --name-only` for the default baseline
+filename — that gate silently no-ops on a vault-configured
+`lint.baselinePath` elsewhere (e.g. `sub/.vaulty-baseline.json`), and the
+check is cheap and read-only enough that gating it was never worth the
+risk of skipping it.
+
 A page with zero TL006/TL008 findings and no PG002-over-max finding gets no
 entry at all (adding one would be a no-op: an absent page's implicit `{0,0,0}`
 baseline already tolerates zero findings), which keeps the file limited to
