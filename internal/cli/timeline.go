@@ -13,7 +13,6 @@ func (a *app) newTimelineCmd() *cobra.Command {
 		a.newTimelineLintCmd(),
 		a.newTimelineReadCmd(),
 		a.newTimelineAppendCmd(),
-		a.newTimelineDumpCmd(),
 	)
 	return cmd
 }
@@ -21,9 +20,11 @@ func (a *app) newTimelineCmd() *cobra.Command {
 // ---- lint -------------------------------------------------------------
 
 type lintOpts struct {
-	hook    bool   // read Claude Code PostToolUse JSON from stdin
-	changed string // git ref; lint files changed vs ref (per-file mode)
-	strict  bool   // warnings also fail
+	hook          bool   // read Claude Code PostToolUse JSON from stdin
+	changed       string // git ref; lint files changed vs ref (per-file mode)
+	strict        bool   // warnings also fail
+	warnings      bool   // print warnings in human mode
+	writeBaseline bool   // recompute and write the ratchet baseline (DESIGN.md §6.1a)
 }
 
 func (a *app) newTimelineLintCmd() *cobra.Command {
@@ -39,12 +40,9 @@ func (a *app) newTimelineLintCmd() *cobra.Command {
 	cmd.Flags().StringVar(&o.changed, "changed", "", "lint .md files changed vs this git ref (default ref: main)")
 	cmd.Flags().Lookup("changed").NoOptDefVal = "main"
 	cmd.Flags().BoolVar(&o.strict, "strict", false, "treat warnings as errors")
+	cmd.Flags().BoolVar(&o.warnings, "warnings", false, "also print warnings in human mode")
+	cmd.Flags().BoolVar(&o.writeBaseline, "write-baseline", false, "recompute the TL006/TL008/PG002 ratchet baseline over the whole vault and write it, then exit")
 	return cmd
-}
-
-func (a *app) runTimelineLint(o lintOpts, args []string) error {
-	// TODO(step 3): DESIGN.md §6.
-	return &ExitError{Code: ExitUsage, Err: ErrNotImplemented}
 }
 
 // ---- read -------------------------------------------------------------
@@ -73,11 +71,6 @@ func (a *app) newTimelineReadCmd() *cobra.Command {
 	return cmd
 }
 
-func (a *app) runTimelineRead(o readOpts, page string) error {
-	// TODO(step 4): DESIGN.md §7.
-	return &ExitError{Code: ExitUsage, Err: ErrNotImplemented}
-}
-
 // ---- append -----------------------------------------------------------
 
 type appendOpts struct {
@@ -97,25 +90,10 @@ func (a *app) newTimelineAppendCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&o.touch, "touch", false, "also set frontmatter updated: to today")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the resulting Timeline block, write nothing")
-	return cmd
-}
-
-func (a *app) runTimelineAppend(o appendOpts, page, entry string) error {
-	// TODO(step 4): DESIGN.md §8.
-	return &ExitError{Code: ExitUsage, Err: ErrNotImplemented}
-}
-
-// ---- dump (hidden; parity harness) ------------------------------------
-
-func (a *app) newTimelineDumpCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:    "dump [paths...]",
-		Short:  "Emit parser state as JSON lines for the Node parity harness",
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO(step 2): DESIGN.md §10.3 — schema must match scripts/parity/oracle-dump.mjs.
-			return &ExitError{Code: ExitUsage, Err: ErrNotImplemented}
-		},
-	}
+	// The entry argument starts with "- **DATE**...", which pflag would
+	// otherwise try to parse as a shorthand-flag cluster. Stop flag
+	// scanning at the first positional so flags must precede <page>
+	// "<entry>", never follow it.
+	cmd.Flags().SetInterspersed(false)
 	return cmd
 }

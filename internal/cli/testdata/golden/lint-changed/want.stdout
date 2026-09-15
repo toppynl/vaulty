@@ -1,0 +1,2 @@
+wiki/b.md:15: TL005 error: out of order: 2026-08-02 after 2026-08-03
+wiki/c.md:13: TL006 warning: entry must read '- **YYYY-MM-DD** | source — what'

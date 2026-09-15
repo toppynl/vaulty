@@ -1,0 +1,4 @@
+version: 1
+lint:
+  page_checks:
+    compiled_truth_max_tokens: 50

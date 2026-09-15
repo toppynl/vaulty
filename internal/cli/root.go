@@ -93,6 +93,52 @@ func (a *app) newRoot() *cobra.Command {
 	root.PersistentFlags().BoolVar(&a.flags.json, "json", false, "machine-readable JSON output")
 
 	root.AddCommand(a.newTimelineCmd())
+	root.AddCommand(a.newConfigCmd())
+	root.AddCommand(a.newVersionCmd())
 	// Reserved for later units (DESIGN.md §3.1): index, lint, migrate, dream.
 	return root
+}
+
+func (a *app) newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the vaulty version",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Fprintln(a.stdout, a.version)
+			return nil
+		},
+	}
+}
+
+func (a *app) newConfigCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "config", Short: "Inspect vault configuration"}
+	cmd.AddCommand(a.newConfigPrintCmd())
+	return cmd
+}
+
+func (a *app) newConfigPrintCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "print",
+		Short: "Print the effective config, vault root and config path",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := a.openVault()
+			if err != nil {
+				return err
+			}
+			if a.flags.json {
+				return a.writeJSON(struct {
+					Root       string      `json:"root"`
+					ConfigPath string      `json:"config_path"`
+					Config     interface{} `json:"config"`
+				}{v.Root, v.ConfigPath, v.Config})
+			}
+			fmt.Fprintln(a.stdout, "root:", v.Root)
+			cfgPath := v.ConfigPath
+			if cfgPath == "" {
+				cfgPath = "(none, using defaults)"
+			}
+			fmt.Fprintln(a.stdout, "config:", cfgPath)
+			return nil
+		},
+	}
 }

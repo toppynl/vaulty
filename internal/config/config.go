@@ -1,5 +1,5 @@
 // Package config loads the per-vault .vaulty.yml (DESIGN.md §4). Every key is
-// optional; absent keys keep the defaults, which match Peep's vault.
+// optional; absent keys keep the defaults, which match Robin's vault.
 package config
 
 import (
@@ -44,6 +44,10 @@ type Lint struct {
 	HookPaths  []string          `yaml:"hook_paths" json:"hook_paths"`
 	PageChecks PageChecks        `yaml:"page_checks" json:"page_checks"`
 	Severity   map[string]string `yaml:"severity" json:"severity"` // code -> error|warning|off
+	// BaselinePath is where `lint --write-baseline` writes, and where lint
+	// reads the ratchet baseline from (DESIGN.md §6.1a). Resolved relative
+	// to the vault root. Ratchet is inactive when this file doesn't exist.
+	BaselinePath string `yaml:"baseline_path" json:"baseline_path"`
 }
 
 type PageChecks struct {
@@ -54,7 +58,7 @@ type PageChecks struct {
 	HeadingKeywords        []string `yaml:"heading_keywords" json:"heading_keywords"`
 }
 
-// Default returns the built-in configuration (Peep's vault layout).
+// Default returns the built-in configuration (Robin's vault layout).
 func Default() *Config {
 	return &Config{
 		Version:     CurrentVersion,
@@ -71,7 +75,8 @@ func Default() *Config {
 				TableKeywords:          []string{"unit", "units", "step", "steps", "stap", "stappen"},
 				HeadingKeywords:        []string{"agent log"},
 			},
-			Severity: map[string]string{},
+			Severity:     map[string]string{},
+			BaselinePath: ".vaulty-baseline.json",
 		},
 	}
 }
@@ -115,6 +120,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Lint.PageChecks.CompiledTruthMaxTokens <= 0 {
 		return errors.New("lint.page_checks.compiled_truth_max_tokens must be > 0")
+	}
+	if strings.TrimSpace(c.Lint.BaselinePath) == "" {
+		return errors.New("lint.baseline_path must not be empty")
 	}
 	for code, sev := range c.Lint.Severity {
 		switch sev {

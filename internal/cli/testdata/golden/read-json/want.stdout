@@ -1,0 +1,5 @@
+{
+  "path": "wiki/a.md",
+  "compiled_truth": "\n# A\n\nbody text here\n\n",
+  "diags": null
+}

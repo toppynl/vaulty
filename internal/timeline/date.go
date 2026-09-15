@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Precision of an entry's date token (DESIGN.md §5.3).
@@ -85,3 +86,21 @@ func ymd(y, m, dd string) string { return y + "-" + m + "-" + dd }
 // since must be a full YYYY-MM-DD. So "2026-08" matches --since 2026-08-01
 // and --since 2026-08-15; "2026-07" does not match --since 2026-08-01.
 func (d Date) OnOrAfter(since string) bool { return d.To >= since }
+
+// Valid is the TL010 validity check (DESIGN.md §5.3): for day precision the
+// full date must be a real calendar date; for every other form, the month
+// must be 01-12.
+func (d Date) Valid() bool {
+	if d.Precision == PrecDay {
+		_, err := time.Parse("2006-01-02", d.Key)
+		return err == nil
+	}
+	if len(d.Key) < 7 {
+		return false
+	}
+	mo, err := strconv.Atoi(d.Key[5:7])
+	if err != nil {
+		return false
+	}
+	return mo >= 1 && mo <= 12
+}

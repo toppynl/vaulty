@@ -6,9 +6,10 @@ the `## Timeline` convention: `vaulty timeline lint|read|append`. The command
 tree leaves room for `index`, a general `lint`, `migrate`, `dream` and similar.
 
 The reference oracle is `scripts/lib/timeline.mjs` plus `scripts/timeline-asc.mjs`
-in the me vault. It was verified zero-loss on all 719 vault files. Go matches
-its parse and sort behaviour exactly (checked by the parity harness in §10.3),
-and fixes its API gaps:
+in the me vault. It was verified zero-loss on all 719 vault files. Go's parse
+and sort semantics are ported from it line-for-line, checked against the real
+vault by a round-trip identity check (§10.3) rather than a Node-diff, and it
+fixes its API gaps:
 
 - parse never stops;
 - it reports line numbers, raw date text and diagnostics;
@@ -87,7 +88,7 @@ internal/timeline/        dates, Parse, sort/serialize (oracle port), Append
 internal/lint/            TL*/PG* checks, modes, counts
 internal/safety/          pre-write verification shared by every writer
 internal/diag/            Diag type + codes
-scripts/parity/           Node oracle dumper + run.sh (step 2)
+scripts/parity/           vault round-trip live proof (package parity, step 2)
 scripts/install.sh        installer (step 5)
 testdata/golden/          CLI golden cases (synthetic content only, §10.2)
 examples/vaulty.yml       documented defaults
@@ -125,10 +126,9 @@ binary is built with CGO disabled.
 ```
 vaulty [--vault DIR] [--json]
 ├── timeline
-│   ├── lint   [paths...] [--hook] [--changed[=REF]] [--warnings] [--strict]
+│   ├── lint   [paths...] [--hook] [--changed[=REF]] [--warnings] [--strict] [--write-baseline]
 │   ├── read   <page> [--timeline] [--since DATE] [--last N] [--frontmatter]
-│   ├── append <page> "<entry>" [--touch] [--dry-run]
-│   └── dump   [paths...]            (hidden; parity harness, §10.3)
+│   └── append <page> "<entry>" [--touch] [--dry-run]
 ├── config print                     (step 1: effective config + root + config path)
 └── version / --version
 ```
@@ -231,14 +231,17 @@ lint:
     table_keywords: [unit, units, step, steps, stap, stappen]
     heading_keywords: ["agent log"]
   severity: {}             # e.g. {TL006: error, TL008: off}
+  baseline_path: .vaulty-baseline.json  # ratchet file (§6.1a), relative to the vault root
 ```
 
 The defaults equal Peep's vault, which therefore needs no config file (ship
 one anyway for clarity). `me-template` has the same top-level layout
-(`wiki me now archive`) but no Timeline convention in its templates. The
-defaults therefore work there too: pages without a Timeline simply produce
-no TL findings. Whether me-template adopts the Timeline convention is open
-question Q5.
+(`wiki me now archive`); its templates currently carry no Timeline
+convention. Peep's decision (2026-09-15, answers Q5 in §15): me-template
+adopts the Timeline convention too — a change to its templates, not to this
+binary, since the defaults already handle a vault with Timelines with no
+config needed (and would have handled the no-Timeline case just as well:
+pages without one simply produce no TL findings).
 
 ### 4.2 Root discovery (`vault.Open(flagRoot, start)`)
 
@@ -474,11 +477,75 @@ parity corpus file.
 | PG001 | work material above the divider | error in files mode; count in vault mode |
 | PG002 | compiled truth > `compiled_truth_max_tokens` | error in files mode; count in vault mode |
 
-TL006 and TL008 are warnings because 81 entries in 20 files (mostly person
-pages written as `| <what>` with no source) and 67 partial dates in 30 files
-are legacy. Fixing a partial date would mean inventing information. `append`
-enforces the strict form for every new entry. The `lint.severity` config can
-override any code: `error`, `warning` or `off`.
+TL006 and TL008 are warnings because legacy entries without a source or with
+a partial date exist throughout the vault (mostly person pages written as
+`| <what>`, and free-form work-log pages under `now/tracking/`). Fixing a
+partial date would mean inventing information. `append` enforces the strict
+form for every new entry. The `lint.severity` config can override any code:
+`error`, `warning` or `off`.
+
+**Peep's decision (2026-09-15), leading over the paragraph above where it
+conflicts:** TL006 and TL008 stay warnings by default, but both — and
+PG002 — are **baseline-ratcheted** (§6.1a): a page may keep its existing
+debt, but may not grow it. `append` remains strict regardless (§8.1).
+
+### 6.1a Baseline ratchet
+
+Before this, PG002 was a hard error in files/hook mode with no way to
+accept legacy debt: editing any of the 17 (now more — vault has grown)
+oversized pages tripped `lint --hook` unconditionally, every time. The
+ratchet fixes that for PG002 and generalizes it to TL006/TL008, which were
+already warnings but had no protection against silently growing worse.
+
+**File.** `lint.baseline_path` (default `.vaulty-baseline.json`, resolved
+relative to the vault root) holds one JSON object:
+
+```json
+{"pages": {
+  "wiki/vendors/sendcloud.md": {"tl006": 12, "tl008": 3, "pg002_tokens": 0},
+  "wiki/systems/bluestone-api-integratie.md": {"tl006": 0, "tl008": 0, "pg002_tokens": 12517}
+}}
+```
+
+Each entry is the last **accepted** count of TL006/TL008 findings and the
+last accepted PG002 token count for that page. A page absent from `pages`
+has an implicit `{0, 0, 0}` baseline. The file is optional; when it does not
+exist, ratchet is inactive and every code behaves exactly as configured
+(pre-U8 behavior) — this keeps `go test ./...` and the real vault (which
+does not ship this file — generating it there is U10c, out of scope here)
+unaffected until someone opts in.
+
+**Rule, per page, per code (TL006, TL008 independently; PG002 by tokens):**
+
+- current count/tokens `>` baseline → **error** (growth);
+- current count/tokens `<=` baseline → the configured default severity
+  (**warning**) — this includes shrinking, which is free: nothing needs to
+  re-run `--write-baseline` just because a page got a little better;
+- baseline entry absent for a path that a baseline file is otherwise active
+  for → treated as baseline `{0,0,0}`: **any** finding on that page is new
+  debt, hence an error. This is what makes the ratchet meaningful for
+  brand-new pages, not just a one-time amnesty.
+
+Ratchet severity is computed before `lint.severity` overrides, so an
+explicit override in `.vaulty.yml` still wins.
+
+**Writing/updating the baseline.** `vaulty timeline lint --write-baseline`
+(vault mode only; no positional args) recomputes TL006/TL008 counts and the
+PG002 token count for every page in `Walk()` and overwrites the baseline
+file with exactly the current state. Recomputation is unconditional, so:
+
+- a page that improved gets a lower number (the baseline tightens itself,
+  free of ceremony);
+- a page that regressed gets a higher number too — that is a deliberate
+  act (someone ran the command and will see the baseline file's diff in
+  review), not something `lint` does automatically. The ratchet's
+  enforcement lives in refusing *undeclared* growth, not in making growth
+  impossible.
+
+A page with zero TL006/TL008 findings and no PG002-over-max finding gets no
+entry at all (adding one would be a no-op: an absent page's implicit `{0,0,0}`
+baseline already tolerates zero findings), which keeps the file limited to
+pages that actually carry debt.
 
 **PG001 work material.** Applies only when the path matches
 `lint.page_checks.paths`. Scan the compiled-truth span line by line, skipping
@@ -510,9 +577,14 @@ MAX — move history to Timeline, work to a work file, then compress".
 | `lint FILE...` | files | exactly those | findings, error |
 | `lint --changed[=REF]` (default `main`) | files | union of `git diff --name-only --diff-filter=AMR REF...HEAD`, `git diff --name-only HEAD`, `git ls-files --others --exclude-standard`; kept if `.md`, under `config.dirs`, not excluded, and still existing | findings, error |
 | `lint --hook` | files (hook) | one file from stdin JSON (§6.4) | findings, error |
+| `lint --write-baseline` | n/a (recompute + write, then exit) | `Walk(config.dirs)`, always the whole vault | writes `lint.baseline_path` (§6.1a); no findings printed |
 
 Explicit file arguments may lie outside `page_checks.paths`; such files only
 get TL checks. `--changed` with an unknown ref, or run outside git, exits 2.
+`--write-baseline` rejects positional paths and `--changed` together (exit
+2): it always covers the whole vault, by design — a partial baseline would
+silently drop every un-walked page's existing debt back to an implicit
+`{0,0,0}`, turning it into a false "new violation" on the next full lint.
 
 ### 6.3 Output
 
@@ -566,16 +638,36 @@ Vault-wide `lint` on a scratch copy of `cf1b6ae` should give:
 | Finding | Expected |
 |---|---|
 | TL003 | 1 (`wiki/stances/tool-saas-selection.md`, `## Self-hosted tools` after Timeline) |
-| TL007 | 1 (the `- **juli/augustus 2026**` line) |
+| TL007 | 1 (an unparseable-date line, currently in `wiki/systems/ground-truth-platform.md`) |
 | TL001, TL002, TL004, TL005 | 0 each |
-| TL006 warnings | about 81 |
-| TL008 warnings | about 67 |
+| TL006 warnings | about 81, **now ~100 in 24 files** (fix-round A remeasurement, 2026-09-15) |
+| TL008 warnings | 67 |
 | `count PG001` | 0 |
 | `count PG002` | 17 |
 
-The exit code should be 1. The numbers come from oracle-based measurement
-scripts. A deviation must be explained in the report, never silently
-accepted.
+The exit code should be 1.
+
+**TL006 deviation, explained (fix-round A, review item 8).** The vault at
+`cf1b6ae` and at current `HEAD` (14 commits later) both measure ~99–100
+TL006 warnings in 24 files, not ~81 in 20 — i.e. the gap predates
+`cf1b6ae` too; it isn't drift since that commit. Manual inspection of every
+flagged file confirms each finding is a real `| what`-only entry with no
+`—` separator (the join/shape logic is correct — verified against
+`entryShapeOK`/`joinedText` line by line for the largest offenders). The
+biggest single contributor is `now/tracking/po-proactief.md` (27 entries):
+a `now/tracking/` work-log page written entirely as free-form
+`- **date** | what.` lines, a legacy-format category the original "mostly
+person pages" description in §6.1 didn't anticipate — `now/tracking/` work
+files evidently accrue this shape naturally and should be read as included
+in TL006's warning-by-design, not as an outlier to fix. The remaining
+difference is ordinary vault growth (new vendor/system pages picked up more
+`| what`-only entries over time, e.g. `wiki/vendors/sendcloud.md`,
+`wiki/vendors/bluestone.md`). No parser bug found; the "~81 in 20 files"
+figure in §6.1 was simply a point-in-time count from before this repo
+existed, not the join being wrong. The baseline ratchet (§6.1a) is exactly
+built to stop this number growing further at the tail from here.
+
+TL008 stayed exactly 67, unaffected.
 
 ---
 
@@ -694,12 +786,21 @@ block edit; it comes before the block, so the block offsets stay valid.
 - **Key present.** Find the first frontmatter line matching `^KEY:`. Apply
   `^(KEY:[ \t]*)(["']?)(\d{4}-\d{2}-\d{2})?(["']?)(.*)$` and replace group 3
   with today, keeping the quotes and any trailing `# comment`. If the
-  existing date is already ≥ today, leave the line unchanged
+  existing date already reads exactly today, leave the line unchanged
   (`Touched=false`).
 - **Key missing.** Insert `KEY: TODAY` directly before the closing `---`.
 - **No frontmatter.** Emit the stderr warning `no frontmatter; --touch
   ignored`.
 - **Unclosed frontmatter.** Refused (§8.2).
+
+**Peep's decision (2026-09-15, answers Q4 in §15).** `--touch` always sets
+`updated:` to today, full stop — including overriding a date that is
+already later than today. The earlier "leave unchanged if already ≥ today"
+rule (meant to avoid *lowering* a future-dated value) is gone: a future
+`updated:` is itself either a typo or someone pre-dating a planned change,
+and either way `--touch` recording "I touched this today" as today is the
+correct, boring behavior. The only no-op case left is "already reads
+exactly today".
 
 ### 8.6 Safety check (`safety.Verify`; mandatory before every write, including dry-run)
 
@@ -820,9 +921,10 @@ Location: `testdata/golden/<case>/`. Each case holds:
 The harness runs `cli.Execute` in-process. `go test ./... -update` rewrites
 the `want.*` files.
 
-**Fixture content is synthetic only.** This repo is shareable and the real
-vault is candid, so never copy real vault pages or entries into `testdata/`.
-Reproduce the real shapes with invented text:
+**Fixture content is synthetic only.** The repo is private (§15 Q3), but
+that doesn't relax this: the real vault is candid, so never copy real vault
+pages or entries into `testdata/`. Reproduce the real shapes with invented
+text:
 
 - hard-wrapped entries with 2-space continuation lines;
 - month-only, `2x` and range dates;
@@ -852,55 +954,83 @@ Minimum cases:
     section after an existing trailing divider; empty block; file without a
     trailing newline; duplicate;
   - `--touch` variants: plain, quoted value, trailing comment, missing key,
-    already newer, no frontmatter;
+    a future `updated:` (overwritten to today — Peep's decision, 2026-09-15;
+    §8.5), no frontmatter;
   - refusals giving exit 3: unsorted, multiple blocks, missing divider,
     content after, placeholder preamble, bad format, partial date, future
-    date (warning only, not a refusal); `--dry-run`.
+    date (warning only, not a refusal); `--dry-run` that would itself be
+    refused (safety.Verify runs before dry-run returns, never after; §8.6).
 
-### 10.3 Node parity harness (`scripts/parity/`)
+### 10.3 Vault round-trip check (`scripts/parity/roundtrip_test.go`, live proof)
 
-- **`oracle-dump.mjs <root>`** imports the oracle from `$ORACLE_LIB`
-  (default `/var/www/personal/me/scripts/lib/timeline.mjs`). It walks
-  `wiki me now archive` exactly as `timeline-asc.mjs` does and, for every
-  file with at least one block, prints one JSON line.
-- **`vaulty timeline dump --vault <root>`** (hidden) prints the same schema
-  from Go. Files come out sorted by path, and keys in the order below.
+Peep's scope call (2026-09-15): the done-criterion for parser correctness
+against the real vault is a **round-trip identity check**, not a Node-oracle
+diff. Over a copy of the vault at HEAD, for every `.md` file under
+`wiki me now archive`:
 
-```json
-{"path":"wiki/a.md","blocks":[
-  {"heading_line":42,"ok":true,"order":"ascending","leading_blanks":1,"trailing_blanks":1,
-   "gaps":[0,0],"entries":[{"key":"2026-08-00","lines":["- **2026-08** | ..."]}],
-   "sorted_body":"<serializeBlock(sortAscending(...))>"}]}
+The file is reconstructed **independently** from its parsed model, not by
+copying the source and splicing an already-verified-equal region back into
+itself (that construction can never disagree with the source once its own
+per-block check passed — see the fix-round A finding this replaced).
+`vault.Walk()` (the default config's dirs) lists the files; for each:
+
+1. `doc.Parse` + `timeline.Parse` the file with the default config (the real
+   vault ships no `.vaulty.yml`).
+2. Copy the frontmatter and compiled-truth span verbatim (this tool never
+   restructures either).
+3. For each Timeline block: copy its heading line verbatim; if the block is
+   `Sortable`, reconstruct its body from the parsed **original** (unsorted)
+   `Entries`, `Gaps`, `LeadingBlanks`, `TrailingBlanks` via `SerializeBody`
+   — this is the one place model-derived (not literal source-slice) bytes
+   enter the reconstruction, and the only place a parser bug can hide;
+   otherwise (not `Sortable`) copy the body verbatim and count it as
+   skipped — not round-trippable by construction. Copy any bytes between
+   blocks, or after the last one (TL003's "content after" case), verbatim.
+4. The independently reconstructed file must be byte-identical to the
+   source. A mismatch confined to a block's `SerializeBody` output is a
+   block mismatch; any other mismatch (a span/boundary bug) is a file
+   mismatch. Both are reported for every file, never short-circuited.
+
+This is a Go test, `TestVaultRoundTrip` in package `parity`
+(`scripts/parity/roundtrip_test.go` — not `internal/timeline`, corrected
+2026-09-15; it lives outside the internal graph so it can freely import
+`internal/vault` alongside `doc`/`timeline`/`config`), gated on the
+`VAULTY_PARITY_ROOT` env var (skipped when unset, so `go test ./...` stays
+green without the private vault). Run it against a scratch copy, never the
+live vault:
+
+```
+git -C /var/www/personal/me worktree add /path/to/scratch HEAD   # read-only copy
+VAULTY_PARITY_ROOT=/path/to/scratch go test ./scripts/parity/... -run TestVaultRoundTrip -v
 ```
 
-- For `ok:false` blocks, only `heading_line` and `ok` appear.
-- In Node, `heading_line` is the number of `\n` in `text.slice(0,
-  headingStart)`, plus 1. Byte offsets are not compared, because JS
-  indices are UTF-16.
-- `sorted_body` is what makes sorting parity real.
+It reports files scanned, blocks checked, blocks skipped (non-sortable),
+block mismatches and file mismatches (both must be 0). On the real vault at
+`HEAD` (2026-09-15): 719 files, 140 blocks checked, 0 skipped, 0 mismatches
+of either kind — the `juli/augustus 2026` block once mentioned here as the
+sole non-`Sortable` case now parses as `Sortable` (its stray unparseable
+date attaches to the previous entry rather than blocking the block); the
+file still trips TL007 (§6.5), it just no longer prevents round-tripping.
 
-**`run.sh`** takes `VAULT_SRC` (default `/var/www/personal/me`) and `REFS`
-(default `"HEAD 9e7bffa^"`). `9e7bffa^` is the vault before the ASC
-migration, with 83 descending and 13 mixed blocks; the current HEAD is all
-ascending, so without it the sort code would go untested. For each ref:
+Second live proof, on the same scratch copy: `vaulty timeline append` on a
+handful of representative pages (one plain, one with month-only entries, one
+with no Timeline yet), each followed by `vaulty timeline lint`, must show no
+lost content and the entry landing in the right (ascending) position. This
+is a manual/scripted smoke test, not a `go test` target (§14 step 4's
+done-when). Verified 2026-09-15 on the three page shapes above (a gap-1
+page wasn't hunted down separately — none of the ~140 blocks needed it to
+demonstrate the property; unit/golden coverage already exercises gap-1
+explicitly, §10.1–10.2).
 
-1. Extract the content dirs:
-   `git -C $VAULT_SRC archive $REF wiki me now archive | tar -x -C $PARITY_TMP/<ref>`.
-   `PARITY_TMP` defaults to `/var/www/tmp/vaulty-parity`. Never use `/tmp`.
-2. Dump both sides.
-3. Normalize with `jq -cS .` and `diff` the results.
-4. Print file and block counts.
-5. `rm -rf` the extract.
-
-The script also runs both dumpers over `testdata/golden/*/vault` to cover
-the `ok:false` paths. It exits non-zero on any diff.
-
-Parity is a local gate, not CI: the vault is private. It must be green
-before step 3 starts, and again at the end.
-
-After U10 ships and parity has been green once, the Node lib and
-`timeline-asc.mjs` can be deleted from the vault. That is the
-orchestrator's call, not part of this repo.
+**Dropped from scope:** the two-ref Node-diff (`HEAD` vs `9e7bffa^`), any
+`make parity` target, and the Node-oracle dumper itself. Removed
+2026-09-15: `scripts/parity/oracle-dump.mjs`, `scripts/parity/run.sh` and
+the hidden `vaulty timeline dump` command (`internal/timeline/dump.go`) —
+Node parity is fully out of scope now, not just de-prioritized, so keeping
+dead code and a hidden CLI surface around to debug a diff nobody runs isn't
+worth it. If a parser disagreement ever needs manual dumping again, write a
+throwaway script against `internal/timeline` directly; don't wire a command
+for it.
 
 ---
 
@@ -1034,12 +1164,12 @@ creating the GitHub remote, and adding commands beyond §3.1.
    - Write the unit tests from §10.1 for config, vault and doc.
 2. **Parser and parity (about 40k).**
    - Build `timeline.Parse` (§5.2–5.4), `AllDiags`, `SortAscending` and
-     `SerializeBody` (§5.5–5.6), and the hidden `dump` command.
-   - Write `scripts/parity/{oracle-dump.mjs,date-keys.mjs,run.sh}` and the
-     date-key test.
-   - Done when: `run.sh` shows zero diff on `HEAD` and `9e7bffa^`, and the
-     round-trip invariant holds on every block. Report the file, block and
-     order counts.
+     `SerializeBody` (§5.5–5.6).
+   - Write the date-key test (`internal/timeline/testdata/date-keys.json`,
+     generated once by `scripts/parity/date-keys.mjs` from the oracle).
+   - Write `scripts/parity/roundtrip_test.go`'s `TestVaultRoundTrip` (§10.3).
+   - Done when: `TestVaultRoundTrip` is zero-mismatch on a scratch copy of
+     the vault at HEAD. Report the file, block and mismatch/skip counts.
 3. **Lint (about 30k).**
    - Build the §6 checks, all modes (`--changed`, `--hook`), `--warnings`,
      `--strict`, severity overrides and both output formats.
@@ -1060,27 +1190,41 @@ creating the GitHub remote, and adding commands beyond §3.1.
    - Write `scripts/install.sh`, `docs/claude-code.md` (the §12 snippets
      plus the §11 bootstrap block) and a short `README.md`.
 6. **Hardening (about 5k).**
-   - Run the full test suite and a parity rerun.
+   - Run the full test suite and a `TestVaultRoundTrip` rerun.
    - Check that `vaulty --version` shows ldflags output.
    - Grep that no Go file hard-codes the name outside `internal/name`.
-   - Report the parity counts, the lint numbers and any deviations.
+   - Report the round-trip counts, the lint numbers and any deviations.
 
 ---
 
 ## 15. Open questions (for Peep)
 
-- **Q1 — Legacy entry format.** 81 entries in 20 files lack
-  `source —`, mostly person pages written as `| <what>`, and there are 67
-  partial dates. The defaults are TL006 and TL008 as warnings, with strict
-  format only on `append`. Should we backfill later and then make TL006 an
-  error, or accept `| what` as a valid person-page form?
-- **Q2 — Oversized legacy pages.** 17 wiki pages are over 3k tokens today.
-  With the hook on, every Edit on one of them reports PG002 as must-fix
-  until U6 shrinks them. Is that intended pressure, or should there be a
-  grace list (`lint.page_checks.exclude`) until U6?
-- **Q3 — Private repo vs. shareable.** me-template is cloneable from GitHub;
-  its users need access to `toppynl/vaulty` releases, or a public repo.
-- **Q4 — `--touch` date.** The current choice is today. Should it be the
-  entry's date instead?
-- **Q5 — me-template convention.** Should me-template adopt the Timeline
-  convention (divider plus `## Timeline` in its templates, and a `.vaulty.yml`)?
+- **Q1 — Legacy entry format. Answered 2026-09-15.** TL006 (no source) and
+  TL008 (partial date) stay warnings, not errors — backfilling would mean
+  inventing information, and `| what`-only entries on person pages and
+  `now/tracking/` work logs are an accepted shape, not a defect to clear.
+  What changes instead: both are now baseline-ratcheted (§6.1a), so the
+  existing ~100/67 legacy findings are grandfathered but a page can't
+  quietly accrue more of them. `append` stays strict for every new entry
+  regardless (§8.1).
+- **Q2 — Oversized legacy pages. Answered 2026-09-15.** Not a grace list
+  (`lint.page_checks.exclude`) — that would hide the pages from PG002
+  entirely, including future growth. Instead: PG002 is baseline-ratcheted
+  (§6.1a) exactly like Q1. A legacy oversized page lints as a warning as
+  long as it doesn't grow past its baselined token count; growing past it
+  is an error. This keeps the pressure (don't make it worse) without
+  blocking every unrelated edit on a page U6 hasn't reached yet.
+- **Q3 — Private repo vs. shareable. Answered 2026-09-15.** The repo stays
+  private. That doesn't relax §10.2's fixture rule: golden vaults and
+  `internal/timeline/testdata/date-keys.json` stay fully synthetic
+  regardless — no real names, brands, amounts or date lists copied out of
+  the vault, private repo or not.
+- **Q4 — `--touch` date. Answered 2026-09-15.** Today, unconditionally —
+  see §8.5. Not the entry's date: `--touch` records "this page was worked
+  on today", independent of which date the new Timeline entry itself
+  carries (an entry can legitimately be backdated).
+- **Q5 — me-template convention. Answered 2026-09-15.** `me-template`
+  adopts the Timeline convention: its page templates get a `## Timeline`
+  section like the main vault's, rather than staying convention-free. This
+  is a change to `me-template`'s own templates, not to this binary — the
+  built-in defaults (§4.1) already handle it with no config needed.

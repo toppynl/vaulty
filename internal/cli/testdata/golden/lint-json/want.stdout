@@ -1,0 +1,11 @@
+{
+  "mode": "vault",
+  "files_checked": 1,
+  "findings": [],
+  "counts": {
+    "PG001": 0,
+    "PG002": 0
+  },
+  "errors": 0,
+  "warnings": 0
+}

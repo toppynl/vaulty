@@ -1,0 +1,3 @@
+vaulty: wiki/a.md has 1 must-fix findings:
+wiki/a.md:14: TL005 error: out of order: 2026-08-01 after 2026-08-03
+Fix these before finishing (touched page rule).
