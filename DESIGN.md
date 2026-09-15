@@ -531,16 +531,27 @@ explicit override in `.vaulty.yml` still wins.
 
 **Writing/updating the baseline.** `vaulty timeline lint --write-baseline`
 (vault mode only; no positional args) recomputes TL006/TL008 counts and the
-PG002 token count for every page in `Walk()` and overwrites the baseline
-file with exactly the current state. Recomputation is unconditional, so:
+PG002 token count for every page in `Walk()`.
 
-- a page that improved gets a lower number (the baseline tightens itself,
-  free of ceremony);
-- a page that regressed gets a higher number too — that is a deliberate
-  act (someone ran the command and will see the baseline file's diff in
-  review), not something `lint` does automatically. The ratchet's
-  enforcement lives in refusing *undeclared* growth, not in making growth
-  impossible.
+**Peep's decision (2026-09-15):** with no baseline file yet, this is first
+creation — the current state is written outright, growth included, exactly
+as before. Once a baseline file exists, writing is **shrink-only by
+default**: per page and per code independently, a lower recomputed value is
+applied (the baseline tightens itself, free of ceremony) but a *higher*
+recomputed value is refused — the old, lower value is kept, reported on
+stderr (`<path> <code> grew <old> -> <new>: refused, kept at <old>`), and the
+command exits nonzero. This closes the hole where an agent blocked by the
+ratchet (e.g. via a `PostToolUse` hook) could run `--write-baseline` itself
+through an already-allowed `Bash(vaulty:*)` permission and quietly rewrite
+its own debt away instead of fixing it.
+
+Deliberately accepting growth needs the separate `--accept-growth` flag: it
+applies the higher value instead of refusing it, still reports every
+increase on stderr (`... : accepted`), and exits 0. This is a human review
+decision — something the CLI reports clearly (the baseline file's diff, plus
+the stderr lines), not something an agent should ever pass on its own
+judgment; agents run `--write-baseline` bare, only a person runs it with
+`--accept-growth`.
 
 A page with zero TL006/TL008 findings and no PG002-over-max finding gets no
 entry at all (adding one would be a no-op: an absent page's implicit `{0,0,0}`
@@ -585,7 +596,7 @@ MAX — move history to Timeline, work to a work file, then compress".
 | `lint FILE...` | files | exactly those | findings, error |
 | `lint --changed[=REF]` (default `main`) | files | union of `git diff --name-only --diff-filter=AMR REF...HEAD`, `git diff --name-only HEAD`, `git ls-files --others --exclude-standard`; kept if `.md`, under `config.dirs`, not excluded, and still existing | findings, error |
 | `lint --hook` | files (hook) | one file from stdin JSON (§6.4) | findings, error |
-| `lint --write-baseline` | n/a (recompute + write, then exit) | `Walk(config.dirs)`, always the whole vault | writes `lint.baseline_path` (§6.1a); no findings printed |
+| `lint --write-baseline` | n/a (recompute + write, then exit) | `Walk(config.dirs)`, always the whole vault | writes `lint.baseline_path` (§6.1a), shrink-only unless `--accept-growth`; no findings printed |
 
 Explicit file arguments may lie outside `page_checks.paths`; such files only
 get TL checks. `--changed` with an unknown ref, or run outside git, exits 2.

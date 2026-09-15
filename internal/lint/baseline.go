@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/vault"
@@ -77,27 +78,90 @@ func BuildBaseline(v *vault.Vault, files []string) (*Baseline, error) {
 		if err != nil {
 			return nil, err
 		}
-		var n006, n008 int
-		for _, d := range p.AllDiags() {
-			switch d.Code {
-			case diag.TL006EntryFormat:
-				n006++
-			case diag.TL008PartialDate:
-				n008++
-			}
-		}
-		tokens := 0
-		if vault.MatchAny(pc.Paths, rel) {
-			text := string(p.Doc.Src[p.CompiledTruth.Start:p.CompiledTruth.End])
-			if t := EstimateTokens(len(text)); t > pc.CompiledTruthMaxTokens {
-				tokens = t
-			}
-		}
+		pageChecksApply := vault.MatchAny(pc.Paths, rel)
+		n006, n008, tokens := pageDebtCounts(p, pageChecksApply, pc)
 		if n006 > 0 || n008 > 0 || tokens > 0 {
 			b.Pages[rel] = PageBaseline{TL006: n006, TL008: n008, PG002Tokens: tokens}
 		}
 	}
 	return b, nil
+}
+
+// GrowthRefusal records one page/code where a freshly recomputed baseline
+// value exceeded the previously accepted one during --write-baseline
+// (DESIGN.md §6.1a). Default mode keeps Old (growth refused); --accept-growth
+// keeps New (growth accepted) — either way it is reported so a human sees it.
+type GrowthRefusal struct {
+	Path string
+	Code diag.Code // TL006EntryFormat, TL008PartialDate or PG002CompiledTruthSize
+	Old  int
+	New  int
+}
+
+// MergeBaseline reconciles a freshly recomputed baseline (fresh) against the
+// previously written one (old) for `lint --write-baseline` (DESIGN.md §6.1a,
+// Peep's 2026-09-15 decision on `--write-baseline` growth). old == nil means
+// no baseline file exists yet — first creation always records the current
+// state outright, growth included, so fresh is returned unchanged with no
+// growth reports regardless of acceptGrowth.
+//
+// Otherwise, per page and per code independently: a fresh value <= the old
+// one is applied (shrinking the baseline is free, never gated); a fresh
+// value greater than the old one is growth — by default it is refused (the
+// old value is kept) and reported; with acceptGrowth it is applied (the new,
+// higher value is kept) and still reported, so a human always sees what grew
+// even when they explicitly accepted it. A page that ends up with an
+// all-zero merged entry (every code shrank to zero) is dropped, matching
+// BuildBaseline's "only pages with actual debt get an entry" rule.
+func MergeBaseline(old, fresh *Baseline, acceptGrowth bool) (*Baseline, []GrowthRefusal) {
+	if old == nil {
+		return fresh, nil
+	}
+
+	merged := &Baseline{Pages: map[string]PageBaseline{}}
+	var growth []GrowthRefusal
+
+	paths := make(map[string]bool, len(old.Pages)+len(fresh.Pages))
+	for p := range old.Pages {
+		paths[p] = true
+	}
+	for p := range fresh.Pages {
+		paths[p] = true
+	}
+
+	apply := func(path string, code diag.Code, oldVal, newVal int) int {
+		if newVal <= oldVal {
+			return newVal
+		}
+		growth = append(growth, GrowthRefusal{Path: path, Code: code, Old: oldVal, New: newVal})
+		if acceptGrowth {
+			return newVal
+		}
+		return oldVal
+	}
+
+	for path := range paths {
+		o := old.Pages[path]   // zero value if absent (implicit {0,0,0})
+		f := fresh.Pages[path] // zero value if absent (page improved to zero)
+
+		m := PageBaseline{
+			TL006:       apply(path, diag.TL006EntryFormat, o.TL006, f.TL006),
+			TL008:       apply(path, diag.TL008PartialDate, o.TL008, f.TL008),
+			PG002Tokens: apply(path, diag.PG002CompiledTruthSize, o.PG002Tokens, f.PG002Tokens),
+		}
+		if m.TL006 > 0 || m.TL008 > 0 || m.PG002Tokens > 0 {
+			merged.Pages[path] = m
+		}
+	}
+
+	sort.Slice(growth, func(i, j int) bool {
+		if growth[i].Path != growth[j].Path {
+			return growth[i].Path < growth[j].Path
+		}
+		return growth[i].Code < growth[j].Code
+	})
+
+	return merged, growth
 }
 
 // applyRatchet upgrades TL006/TL008/PG002 findings to error when the page's
