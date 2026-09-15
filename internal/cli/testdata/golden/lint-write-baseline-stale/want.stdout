@@ -1,0 +1,3 @@
+count PG001 work-material 0
+count PG002 compiled-truth-size 0
+count baseline-stale 1 (pages below baseline; run --write-baseline to tighten)

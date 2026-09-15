@@ -1,0 +1,1 @@
+vaulty: .vaulty-baseline.json exists at HEAD but is missing on disk: restore it (e.g. `git checkout HEAD -- .vaulty-baseline.json`) before writing a fresh baseline

@@ -5,10 +5,31 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 
+	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/vault"
 )
+
+// RatchetDisabled reports whether a `lint.overrides` entry (DESIGN.md
+// §6.1a "per-path overrides") switches the ratchet off for code on path:
+// matching path against every override, in order, the last explicit
+// `ratchet.<code>` setting wins. No matching override, or none mentioning
+// code, leaves the ratchet on (the default) — matching config.Override's
+// own doc comment.
+func RatchetDisabled(overrides []config.Override, path string, code diag.Code) bool {
+	disabled := false
+	for _, ov := range overrides {
+		if !vault.MatchAny(ov.Paths, path) {
+			continue
+		}
+		if v, ok := ov.Ratchet[string(code)]; ok {
+			disabled = !v
+		}
+	}
+	return disabled
+}
 
 // PageBaseline is the accepted (ratcheted) debt for one page (DESIGN.md
 // §6.1a): the TL006/TL008 finding counts and the PG002 token count last
@@ -77,22 +98,8 @@ func BuildBaseline(v *vault.Vault, files []string) (*Baseline, error) {
 		if err != nil {
 			return nil, err
 		}
-		var n006, n008 int
-		for _, d := range p.AllDiags() {
-			switch d.Code {
-			case diag.TL006EntryFormat:
-				n006++
-			case diag.TL008PartialDate:
-				n008++
-			}
-		}
-		tokens := 0
-		if vault.MatchAny(pc.Paths, rel) {
-			text := string(p.Doc.Src[p.CompiledTruth.Start:p.CompiledTruth.End])
-			if t := EstimateTokens(len(text)); t > pc.CompiledTruthMaxTokens {
-				tokens = t
-			}
-		}
+		pageChecksApply := vault.MatchAny(pc.Paths, rel)
+		n006, n008, tokens := pageDebtCounts(p, pageChecksApply, pc, v.Config.Lint.Overrides)
 		if n006 > 0 || n008 > 0 || tokens > 0 {
 			b.Pages[rel] = PageBaseline{TL006: n006, TL008: n008, PG002Tokens: tokens}
 		}
@@ -100,11 +107,118 @@ func BuildBaseline(v *vault.Vault, files []string) (*Baseline, error) {
 	return b, nil
 }
 
+// GrowthRefusal records one page/code where a freshly recomputed baseline
+// value exceeded the previously accepted one during --write-baseline
+// (DESIGN.md §6.1a). Default mode keeps Old (growth refused); --accept-growth
+// keeps New (growth accepted) — either way it is reported so a human sees it.
+type GrowthRefusal struct {
+	Path string
+	Code diag.Code // TL006EntryFormat, TL008PartialDate or PG002CompiledTruthSize
+	Old  int
+	New  int
+}
+
+// ExceedsBaseline reports whether disk has, for any page/code, a value
+// strictly greater than head's — i.e. whether the on-disk baseline file was
+// hand-edited upward relative to head. Used by `lint --write-baseline`
+// (DESIGN.md §6.1a) to refuse computing growth against a tampered file when
+// head (the committed baseline at HEAD) is available. Returns the first
+// offending path/code/values found, in sorted path order, for the error
+// message.
+func ExceedsBaseline(disk, head *Baseline) (exceeds bool, path string, code diag.Code, diskVal, headVal int) {
+	paths := make([]string, 0, len(disk.Pages))
+	for p := range disk.Pages {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	for _, p := range paths {
+		d := disk.Pages[p]
+		h := head.Pages[p] // zero value if absent from head
+		if d.TL006 > h.TL006 {
+			return true, p, diag.TL006EntryFormat, d.TL006, h.TL006
+		}
+		if d.TL008 > h.TL008 {
+			return true, p, diag.TL008PartialDate, d.TL008, h.TL008
+		}
+		if d.PG002Tokens > h.PG002Tokens {
+			return true, p, diag.PG002CompiledTruthSize, d.PG002Tokens, h.PG002Tokens
+		}
+	}
+	return false, "", "", 0, 0
+}
+
+// MergeBaseline reconciles a freshly recomputed baseline (fresh) against the
+// previously written one (old) for `lint --write-baseline` (DESIGN.md §6.1a,
+// Peep's 2026-09-15 decision on `--write-baseline` growth). old == nil means
+// no baseline file exists yet — first creation always records the current
+// state outright, growth included, so fresh is returned unchanged with no
+// growth reports regardless of acceptGrowth.
+//
+// Otherwise, per page and per code independently: a fresh value <= the old
+// one is applied (shrinking the baseline is free, never gated); a fresh
+// value greater than the old one is growth — by default it is refused (the
+// old value is kept) and reported; with acceptGrowth it is applied (the new,
+// higher value is kept) and still reported, so a human always sees what grew
+// even when they explicitly accepted it. A page that ends up with an
+// all-zero merged entry (every code shrank to zero) is dropped, matching
+// BuildBaseline's "only pages with actual debt get an entry" rule.
+func MergeBaseline(old, fresh *Baseline, acceptGrowth bool) (*Baseline, []GrowthRefusal) {
+	if old == nil {
+		return fresh, nil
+	}
+
+	merged := &Baseline{Pages: map[string]PageBaseline{}}
+	var growth []GrowthRefusal
+
+	paths := make(map[string]bool, len(old.Pages)+len(fresh.Pages))
+	for p := range old.Pages {
+		paths[p] = true
+	}
+	for p := range fresh.Pages {
+		paths[p] = true
+	}
+
+	apply := func(path string, code diag.Code, oldVal, newVal int) int {
+		if newVal <= oldVal {
+			return newVal
+		}
+		growth = append(growth, GrowthRefusal{Path: path, Code: code, Old: oldVal, New: newVal})
+		if acceptGrowth {
+			return newVal
+		}
+		return oldVal
+	}
+
+	for path := range paths {
+		o := old.Pages[path]   // zero value if absent (implicit {0,0,0})
+		f := fresh.Pages[path] // zero value if absent (page improved to zero)
+
+		m := PageBaseline{
+			TL006:       apply(path, diag.TL006EntryFormat, o.TL006, f.TL006),
+			TL008:       apply(path, diag.TL008PartialDate, o.TL008, f.TL008),
+			PG002Tokens: apply(path, diag.PG002CompiledTruthSize, o.PG002Tokens, f.PG002Tokens),
+		}
+		if m.TL006 > 0 || m.TL008 > 0 || m.PG002Tokens > 0 {
+			merged.Pages[path] = m
+		}
+	}
+
+	sort.Slice(growth, func(i, j int) bool {
+		if growth[i].Path != growth[j].Path {
+			return growth[i].Path < growth[j].Path
+		}
+		return growth[i].Code < growth[j].Code
+	})
+
+	return merged, growth
+}
+
 // applyRatchet upgrades TL006/TL008/PG002 findings to error when the page's
 // current count/tokens exceed the baseline (DESIGN.md §6.1a). baseline == nil
 // leaves diags untouched (ratchet inactive). It is a no-op for every other
 // code.
-func applyRatchet(diags []diag.Diag, path string, baseline *Baseline) []diag.Diag {
+func applyRatchet(diags []diag.Diag, path string, baseline *Baseline, overrides []config.Override) []diag.Diag {
 	if baseline == nil {
 		return diags
 	}
@@ -123,8 +237,8 @@ func applyRatchet(diags []diag.Diag, path string, baseline *Baseline) []diag.Dia
 	// the Diag; the caller (checkPageHygiene) applies the PG002 ratchet
 	// directly via pg002Severity, where the token count is already in hand.
 
-	grew006 := n006 > bp.TL006
-	grew008 := n008 > bp.TL008
+	grew006 := n006 > bp.TL006 && !RatchetDisabled(overrides, path, diag.TL006EntryFormat)
+	grew008 := n008 > bp.TL008 && !RatchetDisabled(overrides, path, diag.TL008PartialDate)
 	if !grew006 && !grew008 {
 		return diags
 	}

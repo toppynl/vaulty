@@ -1,0 +1,1 @@
+vaulty: --accept-growth requires an interactive terminal on stdin: it is a human decision, never run it from a script or agent

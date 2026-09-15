@@ -1,0 +1,8 @@
+version: 1
+dirs: [wiki, now]
+lint:
+  overrides:
+    - paths: ["now/tracking/**"]
+      ratchet:
+        TL006: false
+        TL008: false

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/lint"
 	"github.com/toppynl/vaulty/internal/name"
@@ -26,15 +28,31 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 		return err
 	}
 
+	if o.checkBaseline {
+		if len(args) > 0 || o.changed != "" {
+			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--check-baseline takes no paths/--changed: it always covers the whole vault")}
+		}
+		if o.writeBaseline {
+			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--check-baseline and --write-baseline are mutually exclusive")}
+		}
+		return a.runCheckBaseline(v)
+	}
 	if o.writeBaseline {
 		if len(args) > 0 || o.changed != "" {
 			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--write-baseline takes no paths/--changed: it always covers the whole vault")}
 		}
-		return a.runWriteBaseline(v)
+		if o.acceptGrowth && !stdinIsTTY(a.stdin) {
+			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--accept-growth requires an interactive terminal on stdin: it is a human decision, never run it from a script or agent")}
+		}
+		return a.runWriteBaseline(v, o.acceptGrowth)
+	}
+	if o.acceptGrowth {
+		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("--accept-growth only applies with --write-baseline")}
 	}
 
 	var mode lint.Mode
 	var files []string
+	fullVault := false
 
 	switch {
 	case o.changed != "":
@@ -50,13 +68,14 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 		}
 	default:
 		mode = lint.ModeVault
+		fullVault = true
 		files, err = v.Walk()
 		if err != nil {
 			return &ExitError{Code: ExitIO, Err: err}
 		}
 	}
 
-	res, err := lint.Run(v, files, lint.Options{Mode: mode, Strict: o.strict})
+	res, err := lint.Run(v, files, lint.Options{Mode: mode, Strict: o.strict, FullVault: fullVault})
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
@@ -70,29 +89,275 @@ func (a *app) runTimelineLint(o lintOpts, args []string) error {
 }
 
 // runWriteBaseline implements `lint --write-baseline` (DESIGN.md §6.1a):
-// recompute the TL006/TL008/PG002 ratchet baseline over the whole vault and
-// write it to lint.baseline_path.
-func (a *app) runWriteBaseline(v *vault.Vault) error {
+// recompute the TL006/TL008/PG002 ratchet baseline over the whole vault.
+//
+// When no baseline file exists yet, this is first creation: the current
+// state is written outright, growth included. Once a baseline exists,
+// writing is shrink-only by default — a page whose debt grew keeps its old,
+// lower value (growth refused), reported on stderr, and the command exits
+// nonzero so an agent blocked by the ratchet cannot silently paper over it
+// via `--write-baseline`. `--accept-growth` is the explicit, human-only
+// escape hatch: it applies the growth instead of refusing it, but still
+// reports every increase on stderr for visibility.
+func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 	files, err := v.Walk()
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
-	baseline, err := lint.BuildBaseline(v, files)
+	fresh, err := lint.BuildBaseline(v, files)
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
+
 	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
-	if err := lint.SaveBaseline(path, baseline); err != nil {
+	old, err := resolveWriteBaselineOld(v, path)
+	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
-	if a.flags.json {
-		return a.writeJSON(struct {
-			Path  string `json:"path"`
-			Pages int    `json:"pages"`
-		}{v.Config.Lint.BaselinePath, len(baseline.Pages)})
+
+	reportOverrideFilteredEntries(a, old, v.Config.Lint.Overrides)
+	reportUnmatchedOverrideGlobs(a, files, v.Config.Lint.Overrides)
+
+	merged, growth := lint.MergeBaseline(old, fresh, acceptGrowth)
+
+	if err := lint.SaveBaseline(path, merged); err != nil {
+		return &ExitError{Code: ExitIO, Err: err}
 	}
-	fmt.Fprintf(a.stdout, "wrote baseline %s (%d pages)\n", v.Config.Lint.BaselinePath, len(baseline.Pages))
+
+	for _, g := range growth {
+		if acceptGrowth {
+			fmt.Fprintf(a.stderr, "%s: %s %s grew %d -> %d: accepted\n", name.Binary, g.Path, g.Code, g.Old, g.New)
+		} else {
+			fmt.Fprintf(a.stderr, "%s: %s %s grew %d -> %d: refused, kept at %d\n", name.Binary, g.Path, g.Code, g.Old, g.New, g.Old)
+		}
+	}
+
+	if a.flags.json {
+		type growthJSON struct {
+			Path     string    `json:"path"`
+			Code     diag.Code `json:"code"`
+			Old      int       `json:"old"`
+			New      int       `json:"new"`
+			Accepted bool      `json:"accepted"`
+		}
+		out := make([]growthJSON, len(growth))
+		for i, g := range growth {
+			out[i] = growthJSON{Path: g.Path, Code: g.Code, Old: g.Old, New: g.New, Accepted: acceptGrowth}
+		}
+		if err := a.writeJSON(struct {
+			Path   string       `json:"path"`
+			Pages  int          `json:"pages"`
+			Growth []growthJSON `json:"growth"`
+		}{v.Config.Lint.BaselinePath, len(merged.Pages), out}); err != nil {
+			return &ExitError{Code: ExitIO, Err: err}
+		}
+	} else {
+		fmt.Fprintf(a.stdout, "wrote baseline %s (%d pages)\n", v.Config.Lint.BaselinePath, len(merged.Pages))
+	}
+
+	if !acceptGrowth && len(growth) > 0 {
+		return &ExitError{Code: ExitFindings}
+	}
 	return nil
+}
+
+// runCheckBaseline implements `lint --check-baseline` (DESIGN.md §6.1a,
+// docs/claude-code.md §8c): a read-only pre-commit backstop that reports
+// whether the ratchet baseline on disk has grown versus the one committed
+// at HEAD, without writing anything. It exists because the CLI's own
+// `--write-baseline` guard only helps when growth actually goes through
+// that command — a hand-edited commit that touches `.vaulty-baseline.json`
+// directly bypasses it entirely. Reuses resolveWriteBaselineOld exactly as
+// --write-baseline does (same HEAD resolution, same submap-safety, same
+// "missing on disk"/"exceeds HEAD" refusals), so both commands can never
+// disagree about what counts as growth.
+func (a *app) runCheckBaseline(v *vault.Vault) error {
+	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
+	if _, err := resolveWriteBaselineOld(v, path); err != nil {
+		return &ExitError{Code: ExitFindings, Err: err}
+	}
+	fmt.Fprintf(a.stdout, "%s: baseline check: no growth vs HEAD\n", name.Binary)
+	return nil
+}
+
+// reportOverrideFilteredEntries warns on stderr when a page's baseline
+// entry would silently vanish on --write-baseline not because the page
+// actually improved, but because `lint.overrides` now disables the ratchet
+// for that path/code (DESIGN.md §4.1, §6.1a): BuildBaseline excludes
+// ratchet-disabled findings from its counts entirely, so an old baseline
+// value that a fresh override now exempts looks exactly like an ordinary
+// shrink to MergeBaseline and disappears without a trace. old == nil (no
+// baseline yet) has nothing to compare against.
+func reportOverrideFilteredEntries(a *app, old *lint.Baseline, overrides []config.Override) {
+	if old == nil || len(overrides) == 0 {
+		return
+	}
+	paths := make([]string, 0, len(old.Pages))
+	for p := range old.Pages {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	codes := []struct {
+		code diag.Code
+		val  func(lint.PageBaseline) int
+	}{
+		{diag.TL006EntryFormat, func(b lint.PageBaseline) int { return b.TL006 }},
+		{diag.TL008PartialDate, func(b lint.PageBaseline) int { return b.TL008 }},
+		{diag.PG002CompiledTruthSize, func(b lint.PageBaseline) int { return b.PG002Tokens }},
+	}
+	for _, p := range paths {
+		entry := old.Pages[p]
+		for _, c := range codes {
+			v := c.val(entry)
+			if v > 0 && lint.RatchetDisabled(overrides, p, c.code) {
+				fmt.Fprintf(a.stderr, "%s: %s %s: lint.overrides disabled the ratchet for this path — baseline entry (was %d) dropped, not a shrink\n", name.Binary, p, c.code, v)
+			}
+		}
+	}
+}
+
+// reportUnmatchedOverrideGlobs warns on stderr about a `lint.overrides`
+// entry whose Paths glob matches nothing anywhere in the vault (files,
+// from the full Walk()) — almost always a typo'd path or a rename left
+// behind in config, silently exempting nothing instead of the intended
+// pages.
+func reportUnmatchedOverrideGlobs(a *app, files []string, overrides []config.Override) {
+	for i, ov := range overrides {
+		matched := false
+		for _, f := range files {
+			if vault.MatchAny(ov.Paths, f) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			fmt.Fprintf(a.stderr, "%s: lint.overrides[%d] paths %v match no files in the vault\n", name.Binary, i, ov.Paths)
+		}
+	}
+}
+
+// resolveWriteBaselineOld resolves the "old" baseline that --write-baseline
+// diffs the freshly recomputed one against (DESIGN.md §6.1a, Peep's
+// 2026-09-15 decision). Inside a git repo, "old" is always the baseline as
+// committed at HEAD, never the on-disk file: that closes two bypasses of
+// the shrink-only ratchet — `rm .vaulty-baseline.json && vaulty timeline
+// lint --write-baseline` (no old on disk, but one exists at HEAD) and
+// hand-raising a value on disk before running --write-baseline (the disk
+// file is never consulted as the growth reference). A baseline file that
+// exists at HEAD but is missing on disk, or that is higher on disk than at
+// HEAD, is refused outright rather than silently reconciled — those are
+// signs of tampering or an incomplete checkout, not a bootstrap. A real
+// bootstrap (no baseline at HEAD and none on disk) still returns nil,
+// meaning first creation, growth included, exactly as before. Outside a
+// git repo, the on-disk file is used directly: current (pre-U8) behavior.
+func resolveWriteBaselineOld(v *vault.Vault, path string) (*lint.Baseline, error) {
+	if !isGitRepo(v.Root) {
+		return lint.LoadBaseline(path)
+	}
+
+	relPath, err := filepath.Rel(v.Root, path)
+	if err != nil {
+		return nil, err
+	}
+	relPath = filepath.ToSlash(relPath)
+
+	disk, err := lint.LoadBaseline(path)
+	if err != nil {
+		return nil, err
+	}
+
+	headData, headErr := gitShowAtHEAD(v.Root, relPath)
+	if headErr != nil {
+		if errors.Is(headErr, errGitPathNotAtHEAD) {
+			// Not tracked at HEAD (or no HEAD commit yet): nothing
+			// committed to diff against. If a file already exists on disk,
+			// treat it as the old baseline (matches non-git behavior);
+			// otherwise this is a real bootstrap.
+			return disk, nil
+		}
+		// Any other git failure (e.g. the vault living in a subdirectory
+		// of the repo and the path being resolved wrong) must never be
+		// treated as "nothing at HEAD" — that would silently reopen the
+		// bypass §6.1a closes: `rm .vaulty-baseline.json &&
+		// --write-baseline` would then look like a bootstrap and accept
+		// any growth. Refuse instead of guessing.
+		return nil, fmt.Errorf("checking %s at HEAD: %w", v.Config.Lint.BaselinePath, headErr)
+	}
+
+	var head lint.Baseline
+	if err := json.Unmarshal(headData, &head); err != nil {
+		return nil, fmt.Errorf("%s at HEAD: %w", v.Config.Lint.BaselinePath, err)
+	}
+	if head.Pages == nil {
+		head.Pages = map[string]lint.PageBaseline{}
+	}
+
+	if disk == nil {
+		return nil, fmt.Errorf("%s exists at HEAD but is missing on disk: restore it (e.g. `git checkout HEAD -- %s`) before writing a fresh baseline", v.Config.Lint.BaselinePath, v.Config.Lint.BaselinePath)
+	}
+
+	if exceeds, p, code, diskVal, headVal := lint.ExceedsBaseline(disk, &head); exceeds {
+		return nil, fmt.Errorf("%s on disk has %s %s=%d, higher than %d committed at HEAD: revert manual edits to the baseline before writing it", v.Config.Lint.BaselinePath, p, code, diskVal, headVal)
+	}
+
+	return &head, nil
+}
+
+// isGitRepo reports whether root is inside a git working tree.
+func isGitRepo(root string) bool {
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// errGitPathNotAtHEAD marks a gitShowAtHEAD failure that means "nothing
+// committed to diff against" (no HEAD commit yet, or relPath not tracked
+// at HEAD) — the only case resolveWriteBaselineOld may fall back from.
+// Any other git failure is returned unwrapped and must be refused, not
+// silently treated as a bootstrap.
+var errGitPathNotAtHEAD = errors.New("path not present at HEAD")
+
+// gitShowAtHEAD returns the content of relPath (relative to root, the
+// vault root) as committed at HEAD. It runs with `-C root` and a
+// cwd-relative pathspec (`HEAD:./relPath`) rather than plain
+// `HEAD:relPath` run with cmd.Dir=root: a bare `HEAD:<path>` is always
+// resolved relative to the *repo's* top level, so when the vault is a
+// submodule/subdirectory of a larger repo, `HEAD:relPath` silently means
+// a different (usually nonexistent) path. `./`-prefixing makes git resolve
+// it relative to `-C`'s directory instead, matching what "relPath, from
+// the vault root" actually means regardless of where the repo root is.
+func gitShowAtHEAD(root, relPath string) ([]byte, error) {
+	cmd := exec.Command("git", "-C", root, "show", "HEAD:./"+relPath)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := stderr.String()
+		if gitShowMeansNotAtHEAD(msg) {
+			return nil, errGitPathNotAtHEAD
+		}
+		return nil, fmt.Errorf("git show HEAD:./%s: %w: %s", relPath, err, strings.TrimSpace(msg))
+	}
+	return out, nil
+}
+
+// gitShowMeansNotAtHEAD reports whether git's stderr for a failed
+// `git show HEAD:./path` means "there is genuinely nothing to compare
+// against" (path untracked at HEAD, or no HEAD commit yet) rather than
+// some other git failure (permission, corruption, wrong cwd, ...) that
+// must be refused instead of treated as a bootstrap.
+func gitShowMeansNotAtHEAD(stderr string) bool {
+	switch {
+	case strings.Contains(stderr, "does not exist in"),
+		strings.Contains(stderr, "exists on disk, but not in"),
+		strings.Contains(stderr, "bad revision 'HEAD'"),
+		strings.Contains(stderr, "unknown revision or path not in the working tree"):
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *app) renderLint(res *lint.Result, showWarnings bool) {
@@ -109,6 +374,12 @@ func (a *app) renderLint(res *lint.Result, showWarnings bool) {
 	if res.Mode == lint.ModeVault {
 		fmt.Fprintf(a.stdout, "count PG001 work-material %d\n", res.Counts[diag.PG001WorkMaterial])
 		fmt.Fprintf(a.stdout, "count PG002 compiled-truth-size %d\n", res.Counts[diag.PG002CompiledTruthSize])
+		if res.BaselineActive {
+			fmt.Fprintf(a.stdout, "count baseline-stale %d (pages below baseline; run --write-baseline to tighten)\n", res.StaleBaseline)
+			for _, p := range res.VanishedBaseline {
+				fmt.Fprintf(a.stdout, "  %s: no longer in the vault (deleted, or renamed and not repointed) — possible rename, or run --write-baseline to drop it\n", p)
+			}
+		}
 	}
 	fmt.Fprintf(a.stderr, "%s: %d errors, %d warnings in %d files\n", name.Binary, res.Errors, res.Warnings, res.FilesChecked)
 }

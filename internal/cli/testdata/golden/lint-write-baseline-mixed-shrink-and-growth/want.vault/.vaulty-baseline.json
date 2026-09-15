@@ -1,0 +1,14 @@
+{
+  "pages": {
+    "wiki/a.md": {
+      "tl006": 1,
+      "tl008": 0,
+      "pg002_tokens": 0
+    },
+    "wiki/b.md": {
+      "tl006": 0,
+      "tl008": 1,
+      "pg002_tokens": 0
+    }
+  }
+}

@@ -25,6 +25,8 @@ type lintOpts struct {
 	strict        bool   // warnings also fail
 	warnings      bool   // print warnings in human mode
 	writeBaseline bool   // recompute and write the ratchet baseline (DESIGN.md §6.1a)
+	acceptGrowth  bool   // with --write-baseline: allow raising a page's baselined debt
+	checkBaseline bool   // read-only: refuse if the on-disk baseline grew vs HEAD (pre-commit backstop)
 }
 
 func (a *app) newTimelineLintCmd() *cobra.Command {
@@ -41,7 +43,9 @@ func (a *app) newTimelineLintCmd() *cobra.Command {
 	cmd.Flags().Lookup("changed").NoOptDefVal = "main"
 	cmd.Flags().BoolVar(&o.strict, "strict", false, "treat warnings as errors")
 	cmd.Flags().BoolVar(&o.warnings, "warnings", false, "also print warnings in human mode")
-	cmd.Flags().BoolVar(&o.writeBaseline, "write-baseline", false, "recompute the TL006/TL008/PG002 ratchet baseline over the whole vault and write it, then exit")
+	cmd.Flags().BoolVar(&o.writeBaseline, "write-baseline", false, "recompute the TL006/TL008/PG002 ratchet baseline over the whole vault and write it, then exit (shrink only by default; see --accept-growth)")
+	cmd.Flags().BoolVar(&o.acceptGrowth, "accept-growth", false, "with --write-baseline, also accept pages whose debt grew (a human decision — never run by an agent)")
+	cmd.Flags().BoolVar(&o.checkBaseline, "check-baseline", false, "read-only: fail if the on-disk ratchet baseline is higher than the one committed at HEAD (pre-commit backstop; never writes)")
 	return cmd
 }
 
@@ -81,7 +85,7 @@ type appendOpts struct {
 func (a *app) newTimelineAppendCmd() *cobra.Command {
 	var o appendOpts
 	cmd := &cobra.Command{
-		Use:   `append <page> "<entry>"`,
+		Use:   `append <page> "<entry>" [--touch] [--dry-run]`,
 		Short: "Insert a Timeline entry by date (creates divider + section if missing)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -90,10 +94,14 @@ func (a *app) newTimelineAppendCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&o.touch, "touch", false, "also set frontmatter updated: to today")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the resulting Timeline block, write nothing")
-	// The entry argument starts with "- **DATE**...", which pflag would
-	// otherwise try to parse as a shorthand-flag cluster. Stop flag
-	// scanning at the first positional so flags must precede <page>
-	// "<entry>", never follow it.
+	// The entry argument conventionally starts with "- **DATE**...", which
+	// pflag would otherwise try to parse as a shorthand-flag cluster no
+	// matter where flags are allowed to appear. Stop flag scanning at the
+	// first positional so the entry is never misread as a flag; Execute
+	// (root.go, normalizeAppendArgs) compensates by moving --touch/
+	// --dry-run in front of the positionals before cobra ever parses,
+	// so both "append <page> \"<entry>\" --touch" and "append --touch
+	// <page> \"<entry>\"" work (DESIGN.md §8.1).
 	cmd.Flags().SetInterspersed(false)
 	return cmd
 }

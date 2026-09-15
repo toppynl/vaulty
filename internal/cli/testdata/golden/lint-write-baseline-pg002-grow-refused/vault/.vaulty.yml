@@ -1,0 +1,5 @@
+version: 1
+dirs: [wiki]
+lint:
+  page_checks:
+    compiled_truth_max_tokens: 10
