@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/toppynl/vaulty/compare/v0.5.0...v0.6.0) (2026-09-17)
+
+
+### Features
+
+* vaulty setup --keep-existing leaves your own files in place ([#22](https://github.com/toppynl/vaulty/issues/22)) ([d5f9c2b](https://github.com/toppynl/vaulty/commit/d5f9c2bdc73535d98a7f9286353c6a59ee5588cd))
+
 ## [0.5.0](https://github.com/toppynl/vaulty/compare/v0.4.0...v0.5.0) (2026-09-17)
 
 
