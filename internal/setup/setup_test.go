@@ -82,6 +82,52 @@ func TestUpgradeUpdatesOwnFilesAndRefusesEdited(t *testing.T) {
 	}
 }
 
+// --keep-existing (MarkKeptExisting) leaves a file vaulty didn't write
+// byte-identical and out of the manifest, while everything else still
+// installs normally.
+func TestKeepExistingLeavesConflictsUntouched(t *testing.T) {
+	claude, _ := Lookup("claude")
+	root := t.TempDir()
+	foreign := filepath.Join(root, "skills", "vaulty-read", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(foreign), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(foreign, []byte("my own notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := NewPlan(release("v1"), claude, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.MarkKeptExisting()
+	if err := Apply(p, "test", false); err != nil {
+		t.Fatal(err)
+	}
+
+	got := statuses(t, p)
+	if got["skills/vaulty-read/SKILL.md"] != Kept {
+		t.Fatalf("foreign file status = %v, want kept", got["skills/vaulty-read/SKILL.md"])
+	}
+	if got["agents/vault-reader.md"] != Created {
+		t.Fatalf("agent file status = %v, want created", got["agents/vault-reader.md"])
+	}
+	if b, err := os.ReadFile(foreign); err != nil || string(b) != "my own notes" {
+		t.Fatalf("kept file changed: %q, %v", b, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "agents", "vault-reader.md")); string(b) != "agent v1" {
+		t.Fatalf("other file not applied: %q", b)
+	}
+
+	man, err := readManifest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := man.Files["skills/vaulty-read/SKILL.md"]; ok {
+		t.Fatalf("kept file recorded in manifest, want it absent")
+	}
+}
+
 // Only the claude target gets the agent; a symlinked destination is replaced,
 // not written through.
 func TestTargetsAndSymlink(t *testing.T) {

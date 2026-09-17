@@ -13,10 +13,11 @@ import (
 )
 
 type setupOpts struct {
-	global bool
-	dir    string
-	force  bool
-	dryRun bool
+	global       bool
+	dir          string
+	force        bool
+	dryRun       bool
+	keepExisting bool
 }
 
 func (a *app) newSetupCmd() *cobra.Command {
@@ -35,7 +36,7 @@ func (a *app) newSetupCmd() *cobra.Command {
 		Long: "Install the vaulty skills (and for Claude Code the vault-reader agent) into the\n" +
 			"vault root, or the home directory with --global. Targets:\n\n" + help.String() +
 			"\nReruns update files vaulty installed; files that exist but differ are only\n" +
-			"replaced with --force.",
+			"replaced with --force, or left alone (status \"kept\") with --keep-existing.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runSetup(o, args)
@@ -45,12 +46,16 @@ func (a *app) newSetupCmd() *cobra.Command {
 	cmd.Flags().StringVar(&o.dir, "dir", "", "install into this project directory instead of the vault root")
 	cmd.Flags().BoolVar(&o.force, "force", false, "replace existing files that differ")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "show what would be written, write nothing")
+	cmd.Flags().BoolVar(&o.keepExisting, "keep-existing", false, "leave conflicting files untouched instead of refusing or overwriting them")
 	return cmd
 }
 
 func (a *app) runSetup(o setupOpts, args []string) error {
 	if o.global && o.dir != "" {
 		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("setup: --global and --dir are mutually exclusive")}
+	}
+	if o.force && o.keepExisting {
+		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("setup: --force and --keep-existing are mutually exclusive")}
 	}
 	var targets []setup.Target
 	seen := map[string]bool{}
@@ -78,6 +83,9 @@ func (a *app) runSetup(o setupOpts, args []string) error {
 		p, err := setup.NewPlan(vaulty.AgentFiles, t, root)
 		if err != nil {
 			return &ExitError{Code: ExitIO, Err: err}
+		}
+		if o.keepExisting {
+			p.MarkKeptExisting()
 		}
 		plans = append(plans, p)
 	}
@@ -147,7 +155,7 @@ func (a *app) printSetup(plans []*setup.Plan, base string, dry bool) {
 				rel = f.Dest
 			}
 			status := string(f.Status)
-			if dry && f.Status != setup.Unchanged && f.Status != setup.Conflict {
+			if dry && f.Status != setup.Unchanged && f.Status != setup.Conflict && f.Status != setup.Kept {
 				status = "would be " + status
 			}
 			line := fmt.Sprintf("  %-20s %s", status, rel)

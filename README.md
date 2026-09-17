@@ -400,7 +400,9 @@ directory, `--global` for the home directory. Each target root gets a
 `.vaulty-setup.json` manifest with a checksum per installed file, so
 rerunning `setup` after upgrading vaulty updates the skills. A file that
 exists but wasn't installed by `setup`, or was edited since, is a conflict:
-nothing is written and the command exits 3 unless `--force` is given.
+nothing is written and the command exits 3 unless `--force` (overwrite it)
+or `--keep-existing` (leave it alone, status `kept`, and still apply
+everything else, exit 0) is given; the two are mutually exclusive.
 `--dry-run` shows the plan; `--json` prints it.
 
 Pick one target per harness: pi reads both `.agents/skills` and

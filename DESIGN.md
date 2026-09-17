@@ -2549,12 +2549,21 @@ Per file:
 | missing | `created` | yes |
 | same bytes | `unchanged` | no |
 | differs, sha256 matches the manifest | `updated` | yes |
-| differs, not in the manifest, or edited since | `conflict` | only with `--force` |
-| not a regular file (symlink, dir) | `conflict` | only with `--force` (replaced, never written through) |
+| differs, not in the manifest, or edited since | `conflict` | only with `--force`; `kept` and skipped with `--keep-existing` |
+| not a regular file (symlink, dir) | `conflict` | only with `--force` (replaced, never written through); `kept` and skipped with `--keep-existing` |
 
 The plan for every target is built before anything is written; any conflict
-without `--force` writes nothing. Files removed from a later release are
-left in place. `--dry-run` prints the plan and writes nothing.
+without `--force` or `--keep-existing` writes nothing. Files removed from a
+later release are left in place. `--dry-run` prints the plan and writes
+nothing.
+
+`--keep-existing` leaves every conflicting file exactly as it is (status
+`kept`) and still applies everything else in the plan, exiting 0. A kept
+file is never recorded in the manifest: if it wasn't vaulty's before, it
+still isn't; if it was (the user edited a file `setup` had installed), its
+existing manifest entry is left untouched. A later run without
+`--keep-existing` reports it as a conflict again. `--keep-existing` and
+`--force` together exit 2.
 
 Output: per target a `<target> (<harnesses>):` line, then one
 `  <status> <path relative to the project dir>` line per file (`would be
@@ -2565,9 +2574,9 @@ blocked the write.
 
 | Exit | When |
 |---|---|
-| 0 | Installed, or dry run without conflicts |
-| 2 | No or unknown target, `--dir` not a directory, `--dir` with `--global`, no vault root found without `--dir`/`--global` |
-| 3 | Conflicts without `--force` (nothing written) |
+| 0 | Installed, or dry run without conflicts, or conflicts kept with `--keep-existing` |
+| 2 | No or unknown target, `--dir` not a directory, `--dir` with `--global`, `--keep-existing` with `--force`, no vault root found without `--dir`/`--global` |
+| 3 | Conflicts without `--force` or `--keep-existing` (nothing written) |
 | 4 | Read/write failure, unreadable manifest |
 
 ## 21. `vaulty write <page>`
