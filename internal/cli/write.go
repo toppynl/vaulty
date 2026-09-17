@@ -37,7 +37,7 @@ func (a *app) newWriteCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&o.section, "section", "", "the section to replace (with --if-hash; stdin includes its heading line) or append to (with --append)")
 	cmd.Flags().StringVar(&o.after, "after", "", "insert stdin as a new section after this heading's section (stdin starts with the new heading)")
-	cmd.Flags().StringVar(&o.ifHash, "if-hash", "", "refuse unless the section's current hash (from `read --section`) matches; required to replace")
+	cmd.Flags().StringVar(&o.ifHash, "if-hash", "", "refuse unless the section's current hash (from read --section) matches; required to replace")
 	cmd.Flags().BoolVar(&o.append, "append", false, "with --section: append stdin to the end of the section")
 	cmd.Flags().BoolVar(&o.touch, "touch", false, "also set frontmatter updated: to today")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the resulting section, write nothing")
@@ -97,25 +97,10 @@ func (a *app) runWrite(o writeOpts, pageArg string) error {
 	// Exact heading match only, and never first-match: writing the wrong
 	// one of two same-named sections is not recoverable from the output.
 	hs := doc.Headings(d)
-	want := normalizeHeadingQuery(query)
-	var matches []doc.Heading
-	for _, h := range hs {
-		if h.Text == want {
-			matches = append(matches, h)
-		}
+	h, err := matchHeading(hs, query)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
 	}
-	switch len(matches) {
-	case 0:
-		return &ExitError{Code: ExitUsage, Err: sectionNotFoundError(hs, query)}
-	case 1:
-	default:
-		lines := make([]string, len(matches))
-		for i, h := range matches {
-			lines[i] = fmt.Sprint(h.Line)
-		}
-		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("ambiguous section: %q matches %d headings (lines %s)", query, len(matches), strings.Join(lines, ", "))}
-	}
-	h := matches[0]
 
 	region, writable := section.Region(d, page, h)
 	if !writable {

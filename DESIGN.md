@@ -1081,7 +1081,10 @@ terse like Timeline mode): `<line>\t<### text>\t<lines>\t<bytes>`, e.g.:
 
 `--json`: `{"path":"...", "headings":[{"line":9,"level":2,"text":"Background","lines":9,"bytes":102,"hash":"1a2b3c4d5e6f"}], "diags":[...]}`.
 `hash` is the section hash from §7.2, so an agent that already listed the
-headings as JSON can pass it straight to `write --if-hash` (§21).
+headings as JSON can pass it straight to `write --if-hash` (§21). A
+heading at or after the compiled-truth end (the `Timeline` heading, or
+anything below it) is not writable, so its entry omits `hash` entirely
+(`omitempty`) rather than printing a hash `write` would only refuse.
 
 A page with no headings prints nothing (human) / an empty `headings` array
 (json), exit 0 — same best-effort contract as the rest of `read`.
@@ -1104,17 +1107,20 @@ After the section, `vaulty: section hash <hash>` goes to stderr, so stdout
 stays exactly the section text. `<hash>` is the first 12 hex characters of
 the sha256 of the untruncated region text (`section.Hash`), whatever
 `--max-bytes` cut; it is what `write --if-hash` compares (§21). A heading
-below the divider (the Timeline) still prints a hash, but `write` refuses
-that section.
+at or after the compiled-truth end (the `Timeline` heading, or anything
+below it) is not writable, so no hash line is printed for it — there is
+nothing `write --if-hash` could ever accept for that section.
 
 The query is matched against heading text with any leading `#`s and
 surrounding whitespace the caller included stripped first, so `--section
 Background`, `--section "## Background"` and `--section "  Background  "`
 all match the same heading. Matching is exact and case-sensitive on the
-remaining text; the first match in file order wins when a vault has two
-identically-named headings (rare — same convention as page names being
-unique by convention, §3.3; a golden fixture pins first-match-wins).
-`write` does not follow this: it refuses an ambiguous heading (§21).
+remaining text (`matchHeading`, `internal/cli/read.go`, shared with
+`write`'s `--section`/`--after`, §21): zero matches is "no such section"
+below, and a heading text that matches more than one heading exits 2 with
+`ambiguous section: "<query>" matches N headings (lines ...)` — same
+error, same wording, `read` and `write` no longer disagree on a vault
+with two identically-named headings.
 
 No match: exit 2, with a suggestion instead of a bare "not found" whenever
 one is available (`sectionNotFoundError`, `internal/cli/read.go`) — an
@@ -1140,6 +1146,8 @@ somehow narrow the section output.
 
 `--json`: adds `"section":{"line":9,"heading":"Background","text":"...","hash":"1a2b3c4d5e6f"}`
 in place of `compiled_truth`/`entries` (no stderr hash line in JSON mode).
+`hash` is omitted (`omitempty`) for a non-writable heading, same rule as
+`--headings --json` above.
 
 ### 7.3 `--max-bytes N`
 
@@ -2576,7 +2584,7 @@ Exactly one of:
 | Invocation | Effect | Stdin |
 |---|---|---|
 | `--section H --if-hash HASH` | replace `H`'s region | the whole section, starting with a heading at `H`'s level (its text may differ: a rename) |
-| `--section H --append` | insert at the end of `H`'s region, after one blank line | body text; headings only deeper than `H` |
+| `--section H --append` | insert at the end of `H`'s region, after one blank line (a single newline instead when the region's last line and stdin's first line are both list items, so the list stays tight) | body text; headings only deeper than `H` |
 | `--after H` | insert a new section after `H`'s region, after one blank line | starts with a heading at `H`'s level or deeper |
 
 `H` is matched like `read --section` (leading `#`s and surrounding
@@ -2605,7 +2613,7 @@ does (§8.5, the shared `timeline.Touch`); unclosed frontmatter with
 | `--if-hash` differs from the current region's hash | the section changed since it was read; re-read, don't force |
 | replacement or new section doesn't start with a heading line, or the level is wrong | same level for replace; `H`'s level or deeper for `--after` — a shallower heading would swallow the sections after it |
 | a later heading in stdin at or above the lead heading's level (replace, `--after`), or at or above `H`'s level (`--append`) | it would end the section early and turn the rest into a different section |
-| the new lead heading text already exists elsewhere on the page | the next `write --section` on it would be ambiguous. Only the lead heading is checked, not subheadings inside stdin |
+| a heading anywhere in stdin (not just the lead heading) duplicates a heading elsewhere on the page (outside the region being replaced, for `--section --if-hash`), or duplicates another heading within stdin itself | the next `write --section`/`read --section` on either would be ambiguous |
 | stdin contains a standalone `---` line or a Timeline heading | caught by the read-back check below: the region would end early |
 | file changed between read and write | concurrent edit |
 

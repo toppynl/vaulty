@@ -149,7 +149,11 @@ caps the output and reports what was cut.
 `section.hash`, over the untruncated section), the value `write --if-hash`
 checks; `--headings --json` includes a `hash` per heading. A section runs
 from its heading to the next heading of the same or a higher level, and
-never past the `---` divider above the Timeline.
+never past the `---` divider above the Timeline. A heading at or after the
+compiled-truth end (the `Timeline` heading itself, or anything below it)
+isn't writable, so no hash line/field is printed for it. A heading text
+that matches more than one heading exits 2 with `ambiguous section` —
+same error, same matching, as `write`.
 
 ```bash
 vaulty read billing
@@ -209,15 +213,21 @@ Edits one compiled-truth section, with the content on stdin:
   `read --section` printed; if the section changed since, it's refused.
 - `--section H --append` adds stdin to the end of `H`'s region. For a
   section with subheadings that is the end of its last subsection. The
-  text may only contain headings deeper than `H`.
+  text may only contain headings deeper than `H`. If the region's last
+  line and stdin's first line are both list items, they're joined with a
+  single newline so the list stays tight; otherwise a blank line separates
+  them.
 - `--after H` inserts a new section after `H`'s region. Stdin starts with
   its heading, at `H`'s level or deeper, with text not already used on the
   page.
 
 Refused with exit 3: a Timeline section or anything below the divider (use
-`timeline append`), a hash mismatch, a new heading that already exists,
-content with a standalone `---` line or a heading that would end the
-section early. A heading text that matches more than one heading exits 2.
+`timeline append`), a hash mismatch, any heading in the stdin content —
+not just the lead heading — that duplicates a heading elsewhere on the
+page (outside the section being replaced) or another heading within the
+content itself, content with a standalone `---` line or a heading that
+would end the section early. A heading text that matches more than one
+heading exits 2.
 Before writing, vaulty checks that the bytes outside the section, the
 Timeline and every other heading are unchanged, and re-reads the file
 right before an atomic write. `--dry-run` prints the resulting section;

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/toppynl/vaulty/internal/doc"
@@ -135,8 +136,8 @@ func Build(p *timeline.Page, h doc.Heading, mode Mode, content string) (*Edit, e
 		if err := checkLeadHeading(own, h.Level, h.Level, "replacement"); err != nil {
 			return nil, err
 		}
-		if dup, ok := duplicateOutside(hs, own[0].Text, region); ok {
-			return nil, fmt.Errorf("%w: heading %q already exists on line %d", ErrRefused, own[0].Text, dup.Line)
+		if err := checkDuplicateHeadings(own, hs, region); err != nil {
+			return nil, err
 		}
 		e.RegionStart, e.RegionEnd = region.Start, region.End
 		e.NewRegion = []byte(content)
@@ -149,17 +150,21 @@ func Build(p *timeline.Page, h doc.Heading, mode Mode, content string) (*Edit, e
 				return nil, fmt.Errorf("%w: appended content has heading %q (level %d); only headings deeper than level %d stay inside the section", ErrRefused, ch.Text, ch.Level, h.Level)
 			}
 		}
+		if err := checkDuplicateHeadings(own, hs, doc.Span{}); err != nil {
+			return nil, err
+		}
+		sep := appendSeparator(Text(d, region), content)
 		e.RegionStart, e.RegionEnd = region.End, region.End
-		e.NewRegion = []byte("\n\n" + content)
+		e.NewRegion = []byte(sep + content)
 		e.HeadingOffset = region.Start
 		e.Heading = h.Text
-		e.SectionText = Text(d, region) + "\n\n" + content
+		e.SectionText = Text(d, region) + sep + content
 	case ModeAfter:
 		if err := checkLeadHeading(own, h.Level, 6, "new section"); err != nil {
 			return nil, err
 		}
-		if dup, ok := duplicateOutside(hs, own[0].Text, doc.Span{}); ok {
-			return nil, fmt.Errorf("%w: heading %q already exists on line %d", ErrRefused, own[0].Text, dup.Line)
+		if err := checkDuplicateHeadings(own, hs, doc.Span{}); err != nil {
+			return nil, err
 		}
 		e.RegionStart, e.RegionEnd = region.End, region.End
 		e.NewRegion = []byte("\n\n" + content)
@@ -212,6 +217,62 @@ func duplicateOutside(hs []doc.Heading, text string, skip doc.Span) (doc.Heading
 		}
 	}
 	return doc.Heading{}, false
+}
+
+// checkDuplicateHeadings refuses when any heading in own (not just the lead
+// heading) duplicates the text of a heading elsewhere on the page (skip
+// excludes the region being replaced, so replacing a section with itself
+// isn't a duplicate) or of another heading within own itself — a duplicate
+// anywhere in the result is just as unrecoverable as a duplicate lead
+// heading.
+func checkDuplicateHeadings(own []doc.Heading, hs []doc.Heading, skip doc.Span) error {
+	seen := map[string]doc.Heading{}
+	for _, ch := range own {
+		if prior, ok := seen[ch.Text]; ok {
+			return fmt.Errorf("%w: heading %q appears more than once in the new content (lines %d and %d)", ErrRefused, ch.Text, prior.Line, ch.Line)
+		}
+		seen[ch.Text] = ch
+		if dup, ok := duplicateOutside(hs, ch.Text, skip); ok {
+			return fmt.Errorf("%w: heading %q already exists on line %d", ErrRefused, ch.Text, dup.Line)
+		}
+	}
+	return nil
+}
+
+// listItemRe matches a list item line: optional indent, then a "-"/"*"/"+"
+// or numbered ("1." / "1)") marker, then a space.
+var listItemRe = regexp.MustCompile(`^\s*([-*+]|[0-9]+[.)])\s`)
+
+// appendSeparator is the join between an appended section's existing region
+// and the new content: a single "\n" when both the region's last non-blank
+// line and the content's first line are list items (so the append stays a
+// tight list), else the usual blank-line "\n\n".
+func appendSeparator(region, content string) string {
+	if isListItem(lastNonBlankLine(region)) && isListItem(firstLine(content)) {
+		return "\n"
+	}
+	return "\n\n"
+}
+
+func isListItem(line string) bool {
+	return listItemRe.MatchString(line)
+}
+
+func lastNonBlankLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return lines[i]
+		}
+	}
+	return ""
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // contentHeadings scans content as a page body: never as frontmatter, even

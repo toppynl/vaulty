@@ -99,13 +99,15 @@ func (a *app) runRead(o readOpts, pageArg string) error {
 	}
 
 	var sec *doc.Heading
+	var secWritable bool
 	if o.section != "" {
 		hs := doc.Headings(d)
-		h, ok := findSection(hs, o.section)
-		if !ok {
-			return &ExitError{Code: ExitUsage, Err: sectionNotFoundError(hs, o.section)}
+		h, err := matchHeading(hs, o.section)
+		if err != nil {
+			return &ExitError{Code: ExitUsage, Err: err}
 		}
 		sec = &h
+		_, secWritable = section.Region(d, page, h)
 	}
 
 	timelineMode := o.timeline || o.since != "" || o.last != 0
@@ -122,7 +124,11 @@ func (a *app) runRead(o readOpts, pageArg string) error {
 		case sec != nil:
 			full := sectionText(page, *sec)
 			text, trunc := maybeTruncate(full, o)
-			out.Section = &readSectionJSON{Line: sec.Line, Heading: sec.Text, Text: text, Hash: section.Hash(full)}
+			var hash string
+			if secWritable {
+				hash = section.Hash(full)
+			}
+			out.Section = &readSectionJSON{Line: sec.Line, Heading: sec.Text, Text: text, Hash: hash}
 			out.Truncated = trunc
 		case timelineMode:
 			for _, e := range entries {
@@ -177,9 +183,11 @@ func (a *app) runRead(o readOpts, pageArg string) error {
 	if trunc != nil {
 		fmt.Fprintf(a.stdout, "[... %d bytes / %d lines truncated ...]\n", trunc.Bytes, trunc.Lines)
 	}
-	if sec != nil {
+	if sec != nil && secWritable {
 		// On stderr so stdout stays exactly the section text; the hash is
-		// over the untruncated text, for `vaulty write --if-hash`.
+		// over the untruncated text, for `vaulty write --if-hash`. Not
+		// writable (e.g. Timeline) means there's nothing to pass to
+		// --if-hash, so no hash line.
 		fmt.Fprintf(a.stderr, "%s: section hash %s\n", name.Binary, section.Hash(content))
 	}
 	return nil
@@ -192,8 +200,12 @@ func (a *app) renderHeadings(rel string, d *doc.Doc, page *timeline.Page) error 
 	if a.flags.json {
 		out := headingsJSON{Path: rel, Diags: page.AllDiags()}
 		for _, h := range hs {
-			span, _ := section.Region(d, page, h)
-			out.Headings = append(out.Headings, headingJSON{Line: h.Line, Level: h.Level, Text: h.Text, Lines: h.Lines(d), Bytes: h.Bytes(), Hash: section.Hash(section.Text(d, span))})
+			span, writable := section.Region(d, page, h)
+			var hash string
+			if writable {
+				hash = section.Hash(section.Text(d, span))
+			}
+			out.Headings = append(out.Headings, headingJSON{Line: h.Line, Level: h.Level, Text: h.Text, Lines: h.Lines(d), Bytes: h.Bytes(), Hash: hash})
 		}
 		if out.Headings == nil {
 			out.Headings = []headingJSON{}
@@ -206,16 +218,31 @@ func (a *app) renderHeadings(rel string, d *doc.Doc, page *timeline.Page) error 
 	return nil
 }
 
-// findSection matches query against headings by text, ignoring any leading
-// '#'s/whitespace the caller included. First match wins in file order.
-func findSection(hs []doc.Heading, query string) (doc.Heading, bool) {
+// matchHeading matches query against headings by text, ignoring any leading
+// '#'s/whitespace the caller included. Shared by `read --section` and
+// `write --section`/`--after` so both refuse the same way on a heading text
+// that isn't unique on the page: no match is "no such section" (with
+// suggestions), more than one is "ambiguous section".
+func matchHeading(hs []doc.Heading, query string) (doc.Heading, error) {
 	want := normalizeHeadingQuery(query)
+	var matches []doc.Heading
 	for _, h := range hs {
 		if h.Text == want {
-			return h, true
+			matches = append(matches, h)
 		}
 	}
-	return doc.Heading{}, false
+	switch len(matches) {
+	case 0:
+		return doc.Heading{}, sectionNotFoundError(hs, query)
+	case 1:
+		return matches[0], nil
+	default:
+		lines := make([]string, len(matches))
+		for i, h := range matches {
+			lines[i] = fmt.Sprint(h.Line)
+		}
+		return doc.Heading{}, fmt.Errorf("ambiguous section: %q matches %d headings (lines %s)", query, len(matches), strings.Join(lines, ", "))
+	}
 }
 
 func normalizeHeadingQuery(s string) string {
@@ -333,7 +360,7 @@ type readSectionJSON struct {
 	Line    int    `json:"line"`
 	Heading string `json:"heading"`
 	Text    string `json:"text"`
-	Hash    string `json:"hash"`
+	Hash    string `json:"hash,omitempty"`
 }
 
 type headingsJSON struct {
@@ -348,7 +375,7 @@ type headingJSON struct {
 	Text  string `json:"text"`
 	Lines int    `json:"lines"`
 	Bytes int    `json:"bytes"`
-	Hash  string `json:"hash"`
+	Hash  string `json:"hash,omitempty"`
 }
 
 func collectEntries(p *timeline.Page) []timeline.Entry {

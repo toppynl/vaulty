@@ -48,15 +48,18 @@ of the page is verified byte-identical before anything is written.
    EOF
    ```
 
-   - `--append` adds a blank line plus stdin at the end of the section's
-     whole region: on a section with subheadings that is the end of its
-     last subsection. Appended text may contain only headings deeper than
-     the section's. To add an item inside an existing list, replace the
-     section instead.
+   - `--append` adds stdin at the end of the section's whole region: on a
+     section with subheadings that is the end of its last subsection.
+     Appended text may contain only headings deeper than the section's.
+     Adding a list item onto an existing list works directly — vaulty
+     joins them with a single newline (no blank line) when the section's
+     last line and stdin's first line are both list items, so the list
+     stays tight; anything else gets the usual blank-line separation.
    - `--after` inserts after the whole region of that heading. The new
-     heading's level must be the same or deeper, and its text must not
-     exist on the page yet. Keep subheading text unique too; duplicate
-     headings can't be targeted later.
+     heading's level must be the same or deeper. Any heading in stdin —
+     not just the new lead heading — must be unique: it can't already
+     exist elsewhere on the page, and can't repeat another heading within
+     the same stdin.
    - `--touch` sets frontmatter `updated:` to today; use it for
      meaningful changes. `--dry-run` prints the resulting section.
    - Never read the whole page just to edit one section.
@@ -64,9 +67,12 @@ of the page is verified byte-identical before anything is written.
    read`, read the section again and redo the edit on the new text. Don't
    work around it. Other refusals name the reason: the section is the
    Timeline (use `timeline append`), the content contains a standalone
-   `---` line or a heading that would end the section early, or the new
-   heading already exists. Exit 2 `ambiguous section` means two headings
-   share that text: tell the user, don't guess.
+   `---` line or a heading that would end the section early, or a heading
+   in stdin already exists elsewhere on the page or repeats within stdin.
+   Exit 2 `ambiguous section` means two headings share that text — `read
+   --section` refuses the same way, it no longer silently picks the first
+   one: re-check the exact heading text with `--headings`, tell the user,
+   don't guess.
 
 A small free-form change inside one section may still use your own edit
 tool, after reading just that section with `vaulty read --section`.
