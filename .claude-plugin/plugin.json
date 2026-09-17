@@ -1,6 +1,6 @@
 {
   "name": "vaulty",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Skills and a read-only agent for LLM-maintained markdown vaults: find and read pages, append Timeline and log entries, keep lint green. Uses the vaulty CLI.",
   "author": {
     "name": "Toppy",
