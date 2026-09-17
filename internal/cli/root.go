@@ -182,9 +182,10 @@ func (a *app) newRoot() *cobra.Command {
 
 	root.AddCommand(a.newTimelineCmd())
 	root.AddCommand(a.newLogCmd())
+	root.AddCommand(a.newFindCmd())
 	root.AddCommand(a.newConfigCmd())
 	root.AddCommand(a.newVersionCmd())
-	// Reserved for later units (DESIGN.md §3.1): index, lint, migrate, dream.
+	// Reserved for later units (DESIGN.md §3.1): index, lint, migrate, dream, search.
 	return root
 }
 

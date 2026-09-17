@@ -29,6 +29,15 @@ type Config struct {
 	Timeline    Timeline    `yaml:"timeline" json:"timeline"`
 	Lint        Lint        `yaml:"lint" json:"lint"`
 	Log         Log         `yaml:"log" json:"log"`
+	Find        Find        `yaml:"find" json:"find"`
+}
+
+// Find configures `vaulty find` (DESIGN.md §18).
+type Find struct {
+	// Index is the vault-relative path to the index file `find` reads
+	// summaries from ("- [[name]] — summary" lines, optionally dated). A
+	// missing file is skipped silently.
+	Index string `yaml:"index" json:"index"`
 }
 
 // Log configures `vaulty log append|last|lint` (DESIGN.md §17).
@@ -126,7 +135,8 @@ func Default() *Config {
 			BaselinePath: ".vaulty-baseline.json",
 			Shard:        Shard{TypeDirs: []string{"wiki/*"}},
 		},
-		Log: Log{Path: "log.md"},
+		Log:  Log{Path: "log.md"},
+		Find: Find{Index: "index.md"},
 	}
 }
 
@@ -175,6 +185,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Log.Path) == "" {
 		return errors.New("log.path must not be empty")
+	}
+	if strings.TrimSpace(c.Find.Index) == "" {
+		return errors.New("find.index must not be empty")
 	}
 	for code, sev := range c.Lint.Severity {
 		switch sev {
