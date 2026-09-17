@@ -1,0 +1,1 @@
+vaulty: search: "-limit" looks like a typo for "--limit" (search has no shorthand flags). To use it literally, put it after "--" (e.g. search -- -limit), or quote it as a phrase to search for it as a term (e.g. search '"-limit"').

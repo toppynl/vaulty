@@ -66,6 +66,10 @@ func Execute(version string, args []string, stdin io.Reader, stdout, stderr io.W
 			return ExitUsage
 		}
 	}
+	if err := checkFlagTypos(args); err != nil {
+		fmt.Fprintln(stderr, name.Binary+":", err)
+		return ExitUsage
+	}
 	args = normalizeAppendArgs(args)
 	args = normalizeSearchArgs(args)
 	a := &app{stdin: stdin, stdout: stdout, stderr: stderr, version: version}
@@ -225,6 +229,87 @@ func normalizeSearchArgs(args []string) []string {
 	out = append(out, flags...)
 	out = append(out, "--")
 	return append(out, terms...)
+}
+
+// commandLongFlags is the long-flag vocabulary of `find` and `search`'s own
+// flags (plus the global --vault/--json, since a single-dash typo of those
+// is exactly the same mistake), used only by checkFlagTypos to spot a
+// mistyped "-word" — never to parse or validate flags for real; cobra/pflag
+// still do that.
+var commandLongFlags = map[string]map[string]bool{
+	"find": {
+		"limit": true, "type": true, "body": true, "only": true, "json": true, "vault": true,
+	},
+	"search": {
+		"only": true, "type": true, "where": true, "limit": true, "timeline": true,
+		"no-cache": true, "rebuild": true, "stats": true, "json": true, "vault": true,
+	},
+}
+
+// checkFlagTypos scans args for a `find`/`search` invocation and, within its
+// own arguments (after the subcommand name, up to a literal "--" separator
+// or the end of args), reports an error for any "-word" token (a single
+// dash) whose word, case-insensitively, exactly matches one of that
+// command's own long flag names.
+//
+// This exists because `search` defines no shorthand flags at all (DESIGN.md
+// §19.1): every argument starting with a single "-" that isn't a recognized
+// flag is silently treated as a *negated query term* by normalizeSearchArgs,
+// so "vaulty search -limit 5" ran (a search for "5" excluding pages
+// containing "limit") with no error, the wrong query, and nothing on stderr
+// to say so. `find` never disguises the token as a positional — it reaches
+// pflag's own shorthand-flag scan, which already errors — but with a cryptic
+// "unknown shorthand flag" message; this check gives it the same clear one
+// pre-emptively, before normalizeAppendArgs/normalizeSearchArgs or cobra see
+// the args at all.
+//
+// A caller who means the literal word still has a way through: everything
+// after a literal "--" is never scanned here, or by pflag's flag parsing
+// (e.g. `vaulty search -- -limit`, `vaulty find -- -limit`). To search for
+// it as a literal positive term rather than search's negation (§19.1), quote
+// it as a phrase so the leading "-" is no longer the first character the
+// query parser sees: `vaulty search '"-limit"'`.
+func checkFlagTypos(args []string) error {
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "--vault":
+			i += 2
+			continue
+		case strings.HasPrefix(a, "--vault=") || strings.HasPrefix(a, "--json"):
+			i++
+			continue
+		}
+		break
+	}
+	if i >= len(args) {
+		return nil
+	}
+	sub := args[i]
+	longFlags, ok := commandLongFlags[sub]
+	if !ok {
+		return nil
+	}
+	for _, a := range args[i+1:] {
+		if a == "--" {
+			break
+		}
+		if a == "-h" || !strings.HasPrefix(a, "-") || strings.HasPrefix(a, "--") {
+			continue
+		}
+		word, _, _ := strings.Cut(strings.TrimPrefix(a, "-"), "=")
+		if !longFlags[strings.ToLower(word)] {
+			continue
+		}
+		escape := fmt.Sprintf("put it after \"--\" (e.g. %s -- %s)", sub, a)
+		if sub == "search" {
+			escape += fmt.Sprintf(", or quote it as a phrase to search for it as a term (e.g. %s '\"%s\"')", sub, a)
+		}
+		return fmt.Errorf("%s: %q looks like a typo for %q (%s has no shorthand flags). To use it literally, %s.",
+			sub, a, "--"+word, sub, escape)
+	}
+	return nil
 }
 
 func (a *app) newRoot() *cobra.Command {
