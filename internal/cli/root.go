@@ -325,6 +325,7 @@ func (a *app) newRoot() *cobra.Command {
 	root.PersistentFlags().BoolVar(&a.flags.json, "json", false, "machine-readable JSON output")
 
 	root.AddCommand(a.newReadCmd())
+	root.AddCommand(a.newWriteCmd())
 	root.AddCommand(a.newLintCmd())
 	root.AddCommand(a.newTimelineCmd())
 	root.AddCommand(a.newLogCmd())
