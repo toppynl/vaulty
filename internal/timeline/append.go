@@ -169,7 +169,7 @@ func Append(p *Page, entry string, opt AppendOptions, cfg *config.Config) (*Appe
 	final := body
 	if opt.Touch {
 		var err error
-		final, touched, err = applyTouch(body, p.Doc, cfg.Frontmatter.UpdatedKey, opt.Today)
+		final, touched, err = Touch(body, p.Doc, cfg.Frontmatter.UpdatedKey, opt.Today)
 		if err != nil {
 			return nil, fmt.Errorf("%w: touch: %v", ErrRefused, err)
 		}
@@ -410,11 +410,13 @@ func insertIntoBlockBytes(d *doc.Doc, block *Block, cfg config.Timeline, newEntr
 
 var reUpdatedLine = regexp.MustCompile(`^([ \t]*)(["']?)(\d{4}-\d{2}-\d{2})?(["']?)(.*)$`)
 
-// applyTouch implements DESIGN.md §8.5. src is the file content (with
-// frontmatter) after the block edit, d is the ORIGINAL doc (only its
-// Frontmatter/HasFM/FMUnclosed are used — src's frontmatter bytes are
-// identical to the original's, since builders never touch it).
-func applyTouch(src []byte, d *doc.Doc, key, today string) ([]byte, bool, error) {
+// Touch implements DESIGN.md §8.5: set the frontmatter KEY line to today
+// (inserting it before the closing '---' when missing). src is the file
+// content (with frontmatter) after a body-only edit, d is the ORIGINAL doc
+// (only its Frontmatter/HasFM are used — src's frontmatter bytes must be
+// identical to the original's). Shared by `timeline append` and `write`;
+// callers refuse an unclosed frontmatter before calling it.
+func Touch(src []byte, d *doc.Doc, key, today string) ([]byte, bool, error) {
 	if !d.HasFM {
 		return src, false, nil
 	}

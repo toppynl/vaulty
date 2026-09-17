@@ -8,10 +8,10 @@ description: "Keep a markdown vault healthy with vaulty lint: check changed page
 ## Lint
 
 ```bash
-vaulty timeline lint --changed          # pages changed vs main (or --changed=<ref>)
-vaulty timeline lint <page|dir>...      # specific pages or dirs
-vaulty timeline lint --warnings         # whole vault, warnings included
-vaulty log lint                         # log.md headings
+vaulty lint --changed          # pages changed vs main (or --changed=<ref>)
+vaulty lint <path|dir>...      # file paths or dirs (not bare page names)
+vaulty lint --warnings         # whole vault, warnings included
+vaulty log lint                # log.md headings
 ```
 
 Exit 1 means errors. Fix the flagged page: each finding names a code
@@ -32,7 +32,7 @@ Legacy debt is frozen per page, so it may shrink but not grow.
 - **Never run `--write-baseline` or `--accept-growth` yourself.** Writing
   the baseline is a human decision. When the ratchet blocks you, fix the
   page or tell the user what grew and why.
-- `vaulty timeline lint --check-baseline` is read-only and safe to run
+- `vaulty lint --check-baseline` is read-only and safe to run
   anytime.
 
 ## Setting up vaulty in a vault
@@ -47,11 +47,20 @@ don't apply them silently.
    `permissions.allow`. Also deny Edit/Write on `.vaulty-baseline.json`,
    `.vaulty.yml` and `.claude/settings*.json`.
 3. **Lint on edit** (PostToolUse, matcher `Edit|Write|MultiEdit`):
-   `command -v vaulty >/dev/null 2>&1 || exit 0; vaulty timeline lint --hook`.
+   `command -v vaulty >/dev/null 2>&1 || exit 0; vaulty lint --hook`.
    The files it checks are set by `lint.hook_paths` in `.vaulty.yml`.
-4. **Baseline**: run `vaulty timeline lint --write-baseline` once (the user
+   `vaulty write`, `vaulty frontmatter` and `vaulty timeline append` run
+   through Bash and don't trigger it; run `vaulty lint <path>` after them.
+4. **Baseline**: run `vaulty lint --write-baseline` once (the user
    runs it) and commit it.
-5. **Pre-commit**: `vaulty timeline lint --check-baseline --staged`.
+5. **Pre-commit**: `vaulty lint --check-baseline --staged`.
+
+## Upgrading from `timeline lint` / `timeline read`
+
+These moved to `vaulty lint` and `vaulty read` (same flags, no aliases).
+The old spellings exit 2 (`unknown command` or `unknown flag`). A hook, pre-commit
+script or vault CLAUDE.md that still says `vaulty timeline lint` or
+`vaulty timeline read` needs updating; point the user at it.
 
 ## Search index
 

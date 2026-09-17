@@ -26,7 +26,7 @@ The plugin ships:
 | component | what it does |
 |---|---|
 | `vaulty-read` skill | find pages (`find`/`search`) and read compiled truth, sections or Timeline history |
-| `vaulty-write` skill | append Timeline entries (`--touch`) and log entries instead of hand-editing |
+| `vaulty-write` skill | edit one section (`write`) or frontmatter field (`frontmatter`), append Timeline and log entries, instead of hand-editing |
 | `vaulty-maintain` skill | lint, fix findings, respect the ratchet baseline, wire vaulty into a vault |
 | `vaulty-setup` skill | interview the user and write `.vaulty.yml` for their vault |
 | `vault-reader` agent | read-only haiku subagent: returns verbatim fragments + verdict, keeps page text out of the main context |
@@ -56,7 +56,7 @@ Create the ratchet baseline once first (DESIGN.md §6.1a). Without
 oversized legacy page, not just pages that grew:
 
 ```bash
-vaulty timeline lint --write-baseline
+vaulty lint --write-baseline
 git add .vaulty-baseline.json && git commit -m "add ratchet baseline"
 ```
 
@@ -69,7 +69,7 @@ git add .vaulty-baseline.json && git commit -m "add ratchet baseline"
         "hooks": [
           {
             "type": "command",
-            "command": "command -v vaulty >/dev/null 2>&1 || exit 0; vaulty timeline lint --hook"
+            "command": "command -v vaulty >/dev/null 2>&1 || exit 0; vaulty lint --hook"
           }
         ]
       }
@@ -80,8 +80,14 @@ git add .vaulty-baseline.json && git commit -m "add ratchet baseline"
 
 The set of files checked is `lint.hook_paths` in `.vaulty.yml` (default
 `["wiki/**"]`); the hook matcher only sees tool names. A missing binary is
-a silent no-op. `vaulty timeline append` runs through Bash, so appending a
-Timeline line does not trigger the hook.
+a silent no-op. `vaulty timeline append`, `vaulty write` and
+`vaulty frontmatter` run through Bash, so they don't trigger the hook; the
+vaulty-write skill has the agent run `vaulty lint <path>` afterwards.
+
+Upgrading from a vaulty that still had `timeline lint`: a hook calling
+`vaulty timeline lint --hook` now fails with exit 2 (`unknown flag`) on
+every edit, and Claude Code shows that to the model. Replace it with
+`vaulty lint --hook` as above.
 
 ## 5. Hardening for agent-driven vaults
 
@@ -126,7 +132,7 @@ vaulty itself enforces two boundaries:
 ```bash
 #!/bin/sh
 # .git/hooks/pre-commit
-vaulty timeline lint --check-baseline --staged
+vaulty lint --check-baseline --staged
 ```
 
 It is read-only and fails if the staged baseline is higher than HEAD's for

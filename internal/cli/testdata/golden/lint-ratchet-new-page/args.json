@@ -1,1 +1,1 @@
-["timeline", "lint", "wiki/a.md", "--warnings"]
+["lint", "wiki/a.md", "--warnings"]

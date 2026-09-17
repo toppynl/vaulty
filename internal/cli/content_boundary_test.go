@@ -57,20 +57,20 @@ func TestContentBoundaryPageArgs(t *testing.T) {
 		"[[.git/config]]", "cfg", "notes", "out",
 	}
 	for _, p := range pages {
-		out, errOut, code := runCLI(t, v, "timeline", "read", p)
-		assertNoSecret(t, "timeline read "+p, out, errOut)
+		out, errOut, code := runCLI(t, v, "read", p)
+		assertNoSecret(t, "read "+p, out, errOut)
 		if code != ExitUsage {
-			t.Errorf("timeline read %s: exit %d, want %d", p, code, ExitUsage)
+			t.Errorf("read %s: exit %d, want %d", p, code, ExitUsage)
 		}
 		out, errOut, code = runCLI(t, v, "timeline", "append", p, "- **2026-09-15** | x.")
 		assertNoSecret(t, "timeline append "+p, out, errOut)
 		if code == 0 {
 			t.Errorf("timeline append %s: succeeded, want refusal", p)
 		}
-		out, errOut, code = runCLI(t, v, "timeline", "lint", p)
-		assertNoSecret(t, "timeline lint "+p, out, errOut)
+		out, errOut, code = runCLI(t, v, "lint", p)
+		assertNoSecret(t, "lint "+p, out, errOut)
 		if code == 0 {
-			t.Errorf("timeline lint %s: succeeded, want refusal", p)
+			t.Errorf("lint %s: succeeded, want refusal", p)
 		}
 	}
 	after, _ := os.ReadFile(filepath.Join(v, ".git", "config"))
@@ -79,8 +79,8 @@ func TestContentBoundaryPageArgs(t *testing.T) {
 	}
 
 	// The allowlisted page itself still works.
-	if out, _, code := runCLI(t, v, "timeline", "read", "wiki/a.md"); code != 0 || !strings.Contains(out, "alpha apple") {
-		t.Errorf("timeline read wiki/a.md: exit %d, out %q", code, out)
+	if out, _, code := runCLI(t, v, "read", "wiki/a.md"); code != 0 || !strings.Contains(out, "alpha apple") {
+		t.Errorf("read wiki/a.md: exit %d, out %q", code, out)
 	}
 }
 

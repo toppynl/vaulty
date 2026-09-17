@@ -6,28 +6,32 @@
       "level": 1,
       "text": "B",
       "lines": 17,
-      "bytes": 151
+      "bytes": 151,
+      "hash": "b1e441490b96"
     },
     {
       "line": 9,
       "level": 2,
       "text": "Background",
       "lines": 9,
-      "bytes": 102
+      "bytes": 102,
+      "hash": "9f06aa1f7f15"
     },
     {
       "line": 14,
       "level": 3,
       "text": "Background Detail",
       "lines": 4,
-      "bytes": 44
+      "bytes": 44,
+      "hash": "8fc7997f0d96"
     },
     {
       "line": 18,
       "level": 2,
       "text": "Usage",
       "lines": 4,
-      "bytes": 27
+      "bytes": 27,
+      "hash": "b0a33d7a8ced"
     },
     {
       "line": 24,

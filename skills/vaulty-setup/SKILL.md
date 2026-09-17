@@ -99,12 +99,12 @@ which key is wrong.
 vaulty config print                 # loads and validates the new config
 vaulty find <a known page name>     # the page is found with the right path
 vaulty search <a word from a page>  # builds the index, returns hits
-vaulty timeline lint --warnings     # whole-vault findings
+vaulty lint --warnings              # whole-vault findings
 ```
 
 If a known page is missing, check `dirs` and `exclude` first. If lint
 reports many findings on existing pages, that's legacy debt: suggest the
-user freezes it with `vaulty timeline lint --write-baseline` (the user
+user freezes it with `vaulty lint --write-baseline` (the user
 runs it, not you) and commits `.vaulty-baseline.json`.
 
 ## 5. Next steps (suggest, don't apply)

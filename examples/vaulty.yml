@@ -10,7 +10,7 @@ dirs: [wiki, me, now, archive]
 exclude: []
 
 frontmatter:
-  updated_key: updated          # bumped by `vaulty timeline append --touch`
+  updated_key: updated          # bumped by --touch (`timeline append`, `write`, `frontmatter`)
 
 timeline:
   heading: "## Timeline"        # exact heading line
@@ -18,7 +18,7 @@ timeline:
   entry_gap: auto               # blank lines between entries on append: auto | 0 | 1
 
 lint:
-  hook_paths: ["wiki/**"]       # files `vaulty timeline lint --hook` checks
+  hook_paths: ["wiki/**"]       # files `vaulty lint --hook` checks
   page_checks:
     paths: ["wiki/**"]          # where PG001/PG002 apply
     compiled_truth_max_tokens: 3000   # estimate = ceil(bytes/4) above the divider

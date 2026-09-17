@@ -7,7 +7,9 @@ cheaper and more reliable than raw `grep`/`cat`/manual edits:
 
 - a `## Timeline` convention — append-only history at the bottom of a
   page, kept separate from the compiled-truth prose above it
-  (`timeline lint|read|append`)
+  (`read`, `timeline append`, `lint`)
+- section and frontmatter edits (`write`, `frontmatter`) — change one
+  section or one field without reading or rewriting the whole page
 - an append-only operation log, `log.md` (`log append|last|lint`)
 - `find` — fast page discovery by name/metadata, replacing `grep -r`
 - `search` — ranked full-text search with source-line snippets,
@@ -96,9 +98,10 @@ payment status back to the CRM every night.
 ```
 
 ```bash
-vaulty timeline lint                              # check the whole vault
-vaulty timeline read billing                       # print the compiled truth only
+vaulty lint                                        # check the whole vault
+vaulty read billing                                # print the compiled truth only
 vaulty timeline append billing "- **2026-09-17** | acme — added dunning emails." --touch
+vaulty frontmatter set billing status=active --touch
 vaulty find billing                                # discover the page by name
 vaulty search "crm sync"                           # ranked full-text search with snippets
 vaulty log append deploy "billing v2 shipped" --body "rolled out to all tenants"
@@ -114,7 +117,7 @@ vaulty log append deploy "billing v2 shipped" --body "rolled out to all tenants"
 - **Entry format.** `- **YYYY-MM-DD** | source — what`, where ` — ` is an
   em-dash (U+2014) with a space on each side. Long entries wrap onto
   continuation lines indented with 2 spaces. `vaulty timeline append`
-  writes this format for you; `vaulty timeline lint` checks it.
+  writes this format for you; `vaulty lint` checks it.
 - **Page resolution.** Anywhere a command takes `<page>`, you can pass a
   bare name (`billing`), a path (`wiki/systems/billing.md`), or a
   `[[wikilink]]`. Bare names are resolved by basename across the
@@ -125,15 +128,47 @@ Run any subcommand with `--json` for machine-readable output, or
 
 ## Commands
 
-### `timeline lint` / `read` / `append`
+> **Renamed.** `timeline read` and `timeline lint` are now the top-level
+> `read` and `lint`, with the same flags and no aliases; the old spellings
+> exit 2. Update hooks and pre-commit scripts that call
+> `vaulty timeline lint`. `timeline` keeps only `append`.
+
+### `read`
 
 ```bash
-vaulty timeline lint [paths...] [--hook] [--changed[=REF]] [--warnings] [--strict] [--write-baseline] [--accept-growth] [--check-baseline [--staged]]
-vaulty timeline read <page> [--timeline] [--since DATE] [--last N] [--frontmatter] [--headings] [--section HEADING] [--max-bytes N]
-vaulty timeline append <page> "<entry>" [--touch] [--dry-run]
+vaulty read <page> [--timeline] [--since DATE] [--last N] [--frontmatter] [--headings] [--section HEADING] [--max-bytes N]
 ```
 
-`lint` checks Timeline format, page hygiene (an oversized or
+Prints the compiled truth by default. `--timeline` (implied by
+`--since`/`--last`) prints Timeline entries instead; `--headings` lists
+section headings (line, line count, byte count) instead of content;
+`--section "<heading text>"` prints just that section; `--max-bytes N`
+caps the output and reports what was cut.
+
+`--section` also prints `vaulty: section hash <12 hex>` on stderr (JSON:
+`section.hash`, over the untruncated section), the value `write --if-hash`
+checks; `--headings --json` includes a `hash` per heading. A section runs
+from its heading to the next heading of the same or a higher level, and
+never past the `---` divider above the Timeline. A heading at or after the
+compiled-truth end (the `Timeline` heading itself, or anything below it)
+isn't writable, so no hash line/field is printed for it. A heading text
+that matches more than one heading exits 2 with `ambiguous section` —
+same error, same matching, as `write`.
+
+```bash
+vaulty read billing
+vaulty read billing --since 2026-08-01
+vaulty read billing --headings
+vaulty read billing --section "Billing"
+```
+
+### `lint`
+
+```bash
+vaulty lint [paths...] [--hook] [--changed[=REF]] [--warnings] [--strict] [--write-baseline] [--accept-growth] [--check-baseline [--staged]]
+```
+
+Checks Timeline format, page hygiene (an oversized or
 work-material-laden compiled truth) and shard hygiene, and exits 1 if it
 finds an error-severity issue. `--write-baseline` recomputes the ratchet
 baseline used to allow existing debt while blocking new debt (shrink-only
@@ -142,31 +177,107 @@ read-only pre-commit check that the baseline about to be committed never
 grew.
 
 ```bash
-vaulty timeline lint
-vaulty timeline lint --changed        # only .md files changed vs main
-vaulty timeline lint --hook           # Claude Code PostToolUse mode (reads hook JSON on stdin)
+vaulty lint
+vaulty lint --changed        # only .md files changed vs main
+vaulty lint --hook           # Claude Code PostToolUse mode (reads hook JSON on stdin)
 ```
 
-`read` prints the compiled truth by default. `--timeline` (implied by
-`--since`/`--last`) prints Timeline entries instead; `--headings` lists
-section headings (line, line count, byte count) instead of content;
-`--section "<heading text>"` prints just that section; `--max-bytes N`
-caps the output and reports what was cut.
+### `timeline append`
 
 ```bash
-vaulty timeline read billing
-vaulty timeline read billing --since 2026-08-01
-vaulty timeline read billing --headings
-vaulty timeline read billing --section "Billing"
+vaulty timeline append <page> "<entry>" [--touch] [--dry-run]
 ```
 
-`append` inserts a Timeline entry in date order, creating the divider and
+Inserts a Timeline entry in date order, creating the divider and
 `## Timeline` section if missing. `--touch` also bumps the frontmatter
 `updated:` key to today; `--dry-run` prints the resulting block without
 writing.
 
 ```bash
 vaulty timeline append billing "- **2026-09-17** | acme — added dunning emails." --touch
+```
+
+### `write`
+
+```bash
+vaulty write <page> --section HEADING --if-hash HASH [--touch] [--dry-run] < section
+vaulty write <page> --section HEADING --append [--touch] [--dry-run] < text
+vaulty write <page> --after HEADING [--touch] [--dry-run] < section
+```
+
+Edits one compiled-truth section, with the content on stdin:
+
+- `--section H --if-hash HASH` replaces section `H`. Stdin is the whole
+  section, heading line included, at the same level (the text may change,
+  so a rename is fine). `--if-hash` is required and must match the hash
+  `read --section` printed; if the section changed since, it's refused.
+- `--section H --append` adds stdin to the end of `H`'s region. For a
+  section with subheadings that is the end of its last subsection. The
+  text may only contain headings deeper than `H`. If the region's last
+  line and stdin's first line are both list items, they're joined with a
+  single newline so the list stays tight; otherwise a blank line separates
+  them.
+- `--after H` inserts a new section after `H`'s region. Stdin starts with
+  its heading, at `H`'s level or deeper, with text not already used on the
+  page.
+
+Refused with exit 3: a Timeline section or anything below the divider (use
+`timeline append`), a hash mismatch, any heading in the stdin content —
+not just the lead heading — that duplicates a heading elsewhere on the
+page (outside the section being replaced) or another heading within the
+content itself, content with a standalone `---` line or a heading that
+would end the section early. A heading text that matches more than one
+heading exits 2.
+Before writing, vaulty checks that the bytes outside the section, the
+Timeline and every other heading are unchanged, and re-reads the file
+right before an atomic write. `--dry-run` prints the resulting section;
+`--json` reports `path`, `mode`, `heading`, `line` and the new `hash`.
+
+```bash
+vaulty read billing --section "Owners"          # stderr: vaulty: section hash 1a2b3c4d5e6f
+vaulty write billing --section "Owners" --if-hash 1a2b3c4d5e6f --touch <<'EOF'
+## Owners
+
+- Finance team
+EOF
+vaulty write billing --after "Owners" <<'EOF'
+## Risks
+
+- Single payment provider.
+EOF
+```
+
+### `frontmatter`
+
+```bash
+vaulty frontmatter get <page> [key...]
+vaulty frontmatter set <page> key=value... [--touch] [--dry-run]
+vaulty frontmatter add <page> <key> <value>... [--touch] [--dry-run]
+vaulty frontmatter remove <page> <key> <value>... [--touch] [--dry-run]
+vaulty frontmatter unset <page> <key>... [--touch] [--dry-run]
+```
+
+Reads and edits flat YAML frontmatter line by line, so quoting, flow
+(`[a, b]`) or block (`- a`) list style, comments and key order are kept.
+`get` prints the block or the named keys as written (`--json`: decoded
+values), and exits 1 when the page has no frontmatter or none of the keys. `set` writes scalars, quoting values that need it, and refuses a
+list key. `add`/`remove` edit list items: `add` skips values already
+present and creates a flow list when the key is missing. A value starting
+with `-` needs `--` in front. `unset` removes keys. `--touch` bumps
+`updated:` only when something else changed; a call that changes nothing
+prints `unchanged`.
+
+Refused with exit 3: shapes it doesn't edit (nested maps, block scalars,
+multi-line flow lists), frontmatter that isn't valid YAML, duplicate keys.
+Before writing, vaulty checks that the body is byte-identical and every
+key it didn't touch decodes to the same value.
+
+```bash
+vaulty frontmatter get billing status
+vaulty frontmatter set billing status=active owner="[[finance]]" --touch
+vaulty frontmatter add billing related "[[crm]]" "[[ledger]]"
+vaulty frontmatter remove billing tags legacy
+vaulty frontmatter unset billing draft
 ```
 
 ### `log append` / `last` / `lint`
@@ -323,7 +434,7 @@ dirs: [wiki, me, now, archive]
 exclude: []
 
 frontmatter:
-  updated_key: updated          # bumped by `timeline append --touch`
+  updated_key: updated          # bumped by --touch (`timeline append`, `write`, `frontmatter`)
 
 timeline:
   heading: "## Timeline"        # exact heading line
@@ -331,7 +442,7 @@ timeline:
   entry_gap: auto                # blank lines between entries on append: auto | 0 | 1
 
 lint:
-  hook_paths: ["wiki/**"]       # files `timeline lint --hook` checks
+  hook_paths: ["wiki/**"]       # files `lint --hook` checks
   page_checks:
     paths: ["wiki/**"]                          # where the page-hygiene checks apply
     compiled_truth_max_tokens: 3000              # estimate = ceil(bytes/4) above the divider
@@ -393,9 +504,10 @@ An annotated copy ships at [`examples/vaulty.yml`](examples/vaulty.yml).
 ## Using with Claude Code / LLM agents
 
 `vaulty` is built to sit behind an agent. It ships skills for reading
-(`vaulty-read`), writing (`vaulty-write`), maintaining (`vaulty-maintain`)
-and configuring (`vaulty-setup`) a vault, plus a read-only `vault-reader`
-subagent for Claude Code.
+(`vaulty-read`), writing (`vaulty-write`: section and frontmatter edits,
+Timeline and log entries), maintaining (`vaulty-maintain`) and configuring
+(`vaulty-setup`) a vault, plus a read-only `vault-reader` subagent for
+Claude Code.
 
 - **Any harness**: `vaulty setup <claude|agents|pi>` installs them into the
   vault (see [`setup`](#setup)); the [prompt above](#let-your-agent-set-it-up)
@@ -418,7 +530,7 @@ Paths are checked after following symlinks. This is an allowlist, so
 `.git/config` (which may hold a token), `.github/`, `.env` files, anything
 outside `dirs` and non-markdown files are unreachable through every
 command. Page arguments, `find`, `search` results (including a stale
-cache), `lint` and config-named files (`log.path`, `find.index`,
+cache), `lint`, `write`, `frontmatter` and config-named files (`log.path`, `find.index`,
 `lint.baseline_path`) are all covered, so an agent driven by untrusted chat
 input cannot use vaulty to read repo secrets. Details: DESIGN.md §3.5.
 
@@ -429,7 +541,7 @@ input cannot use vaulty to read repo secrets. Details: DESIGN.md §3.5.
 | 0 | Success; lint found no error-severity finding (warnings allowed unless `--strict`) |
 | 1 | Lint: at least one error-severity finding (or a warning, under `--strict`) |
 | 2 | Usage error: bad flag/argument, page not found/ambiguous/outside the vault, invalid config, missing git ref (also `lint --hook` with findings) |
-| 3 | Refused: append validation failed, or the page/log wasn't safe to write |
+| 3 | Refused: append validation failed, section hash mismatch, or the page/log wasn't safe to write |
 | 4 | I/O error reading or writing a file |
 
 Every subcommand also accepts `--json` for a single machine-readable JSON

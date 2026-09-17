@@ -1,0 +1,1 @@
+vaulty: replacing a section needs --if-hash: run `vaulty read wiki/p.md --section "Goals"` first and pass the hash it prints (or use --append)

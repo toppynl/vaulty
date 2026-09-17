@@ -1,5 +1,6 @@
 // Package safety verifies a proposed rewrite before any write (DESIGN.md §8.6).
-// Every command that writes a vault file must call Verify and refuse on error.
+// Every command that writes a vault file must call Verify (or, for section
+// writes, VerifySection) and refuse on error.
 package safety
 
 import (
@@ -10,6 +11,7 @@ import (
 	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/doc"
+	"github.com/toppynl/vaulty/internal/section"
 	"github.com/toppynl/vaulty/internal/timeline"
 )
 
@@ -225,6 +227,136 @@ func (m multiset) equal(o multiset) bool {
 	}
 	for k, v := range o {
 		if v != 0 && m[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// SectionExpect describes the only change a section write (`vaulty write`)
+// may make. Offsets are into orig; next may additionally differ in the
+// frontmatter updated line (AllowUpdatedLine), which shifts them by the
+// frontmatter length change.
+type SectionExpect struct {
+	// orig[RegionStart:RegionEnd] is replaced by exactly NewRegion (an
+	// insertion has RegionStart == RegionEnd).
+	RegionStart, RegionEnd int
+	NewRegion              []byte
+	// The written section's heading starts at HeadingOffset (before the
+	// frontmatter shift), and its section.Region must read back as
+	// SectionText — so the next read's hash covers exactly what was written.
+	HeadingOffset int
+	SectionText   string
+	// Frontmatter may differ only in the updated-key line.
+	AllowUpdatedLine bool
+}
+
+// VerifySection returns nil when next is orig with exactly the expected
+// section change: frontmatter equal (bar the updated line), bytes before and
+// after the region equal, NewRegion at the region, the written section
+// reading back as SectionText, the Timeline (divider, blocks, entries)
+// byte-identical, and every heading outside the region unchanged.
+func VerifySection(orig, next []byte, e SectionExpect, cfg *config.Config) error {
+	origDoc := doc.Parse("", orig)
+	nextDoc := doc.Parse("", next)
+
+	origFM := orig[origDoc.Frontmatter.Start:origDoc.Frontmatter.End]
+	nextFM := next[nextDoc.Frontmatter.Start:nextDoc.Frontmatter.End]
+
+	// 1. Frontmatter.
+	if e.AllowUpdatedLine {
+		if err := verifyUpdatedLine(string(origFM), string(nextFM), cfg.Frontmatter.UpdatedKey); err != nil {
+			return refused("frontmatter", "%v", err)
+		}
+	} else if !bytes.Equal(origFM, nextFM) {
+		return refused("frontmatter", "changed")
+	}
+	delta := len(nextFM) - len(origFM)
+
+	// 2. Before the region.
+	if e.RegionStart < origDoc.Frontmatter.End || e.RegionEnd < e.RegionStart || e.RegionEnd > len(orig) {
+		return refused("region", "[%d,%d) out of range", e.RegionStart, e.RegionEnd)
+	}
+	newStart := e.RegionStart + delta
+	newEnd := newStart + len(e.NewRegion)
+	if newStart < nextDoc.Frontmatter.End || newEnd > len(next) {
+		return refused("region", "new region [%d,%d) out of range", newStart, newEnd)
+	}
+	if !bytes.Equal(orig[origDoc.Frontmatter.End:e.RegionStart], next[nextDoc.Frontmatter.End:newStart]) {
+		return refused("before-region", "bytes before the region changed")
+	}
+
+	// 3. The region itself.
+	if !bytes.Equal(next[newStart:newEnd], e.NewRegion) {
+		return refused("region", "new content not found at the region")
+	}
+
+	// 4. After the region.
+	if !bytes.Equal(orig[e.RegionEnd:], next[newEnd:]) {
+		return refused("after-region", "bytes after the region changed")
+	}
+
+	origPage := timeline.Parse(origDoc, cfg.Timeline)
+	nextPage := timeline.Parse(nextDoc, cfg.Timeline)
+	nextHeadings := doc.Headings(nextDoc)
+
+	// 5. Read-back: the written section's region is exactly SectionText.
+	found := false
+	for _, h := range nextHeadings {
+		if h.Span.Start != e.HeadingOffset+delta {
+			continue
+		}
+		found = true
+		span, _ := section.Region(nextDoc, nextPage, h)
+		if section.Text(nextDoc, span) != e.SectionText {
+			return refused("read-back", "the written section does not read back as written (a standalone \"---\" line or a Timeline heading in the content ends it early)")
+		}
+	}
+	if !found {
+		return refused("read-back", "no heading at the written section's start")
+	}
+
+	// 6. Timeline: divider, blocks and entries byte-identical.
+	if len(origPage.Blocks) != len(nextPage.Blocks) {
+		return refused("timeline", "Timeline block count changed (%d -> %d)", len(origPage.Blocks), len(nextPage.Blocks))
+	}
+	if !bytes.Equal(orig[origPage.CompiledTruth.End:], next[nextPage.CompiledTruth.End:]) {
+		return refused("timeline", "bytes from the compiled-truth end on changed")
+	}
+	for i := range origPage.Blocks {
+		ob, nb := &origPage.Blocks[i], &nextPage.Blocks[i]
+		if !bytes.Equal(orig[ob.Heading.Start:ob.Body.End], next[nb.Heading.Start:nb.Body.End]) ||
+			(ob.DividerLine == 0) != (nb.DividerLine == 0) ||
+			!entriesEqual(ob.Entries, nb.Entries) {
+			return refused("timeline", "Timeline block %d changed", i+1)
+		}
+	}
+
+	// 7. Headings outside the region: same levels and texts, same order.
+	var outsideOrig, outsideNext []string
+	for _, h := range doc.Headings(origDoc) {
+		if h.Span.Start < e.RegionStart || h.Span.Start >= e.RegionEnd {
+			outsideOrig = append(outsideOrig, fmt.Sprintf("%d %s", h.Level, h.Text))
+		}
+	}
+	for _, h := range nextHeadings {
+		if h.Span.Start < newStart || h.Span.Start >= newEnd {
+			outsideNext = append(outsideNext, fmt.Sprintf("%d %s", h.Level, h.Text))
+		}
+	}
+	if strings.Join(outsideOrig, "\n") != strings.Join(outsideNext, "\n") {
+		return refused("headings", "headings outside the section changed")
+	}
+
+	return nil
+}
+
+func entriesEqual(a, b []timeline.Entry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.Join(a[i].Lines, "\n") != strings.Join(b[i].Lines, "\n") {
 			return false
 		}
 	}

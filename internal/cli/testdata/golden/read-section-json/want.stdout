@@ -3,7 +3,8 @@
   "section": {
     "line": 9,
     "heading": "Background",
-    "text": "## Background\n\nBackground line one.\nBackground line two.\n\n### Background Detail\n\nNested detail line."
+    "text": "## Background\n\nBackground line one.\nBackground line two.\n\n### Background Detail\n\nNested detail line.",
+    "hash": "9f06aa1f7f15"
   },
   "diags": null
 }
