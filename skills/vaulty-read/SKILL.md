@@ -1,6 +1,6 @@
 ---
 name: vaulty-read
-description: "Find and read pages in a markdown knowledge vault with the vaulty CLI instead of grep/find/cat. Use when answering a question from a vault (a repo with a .vaulty.yml, or a wiki/notes repo the user calls their vault/knowledge base), looking up a person/system/decision page, or reading a page's compiled truth or Timeline history."
+description: "Find and read pages in a markdown knowledge vault with the vaulty CLI instead of grep/find/cat. Use when answering a question from a vault (a repo with a .vaulty.yml, or a wiki/notes repo the user calls their vault/knowledge base), looking up a person/system/decision page, or reading a page's compiled truth or Timeline history. If the vault ships its own query skill or reader agent, that owns the workflow; use this for the vaulty commands."
 ---
 
 # Reading a vault with vaulty
