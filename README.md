@@ -19,6 +19,30 @@ truncation, `--headings`/`--section` to jump straight to one part of a
 page, and search results that return a couple of snippet lines instead of
 whole files. See [`DESIGN.md`](DESIGN.md) for the full spec.
 
+## Let your agent set it up
+
+Paste this into Claude Code, Codex, Gemini CLI, OpenCode or pi, started in
+the repo that holds your notes:
+
+```text
+Set up vaulty (https://github.com/toppynl/vaulty) for this repo.
+
+1. If `vaulty version` fails, install it:
+   curl -fsSL https://raw.githubusercontent.com/toppynl/vaulty/main/scripts/install.sh | bash
+2. Install the vaulty skills for the agent you are:
+   `vaulty setup claude --dir .` (Claude Code), `vaulty setup agents --dir .`
+   (Codex, Gemini CLI, OpenCode) or `vaulty setup pi --dir .` (pi).
+3. Read the vaulty-setup skill it just installed
+   (.claude/skills/vaulty-setup/SKILL.md, .agents/skills/vaulty-setup/SKILL.md
+   or .pi/skills/vaulty-setup/SKILL.md) and follow it: look at the repo, ask me
+   what you can't tell from it, then write .vaulty.yml and verify it.
+
+Show me .vaulty.yml before you write it. Don't change permissions, hooks
+or the lint baseline without asking.
+```
+
+Restart the agent afterwards so it picks up the new skills.
+
 ## Install
 
 ```bash
@@ -240,6 +264,38 @@ Each of the seven content fields (`title`, `aliases`, `slug`, `h1`, `index`,
 `tags`, `body`) carries its own query-time boost, configurable via
 `search.boosts` in [Configuration](#configuration).
 
+### `setup`
+
+```bash
+vaulty setup claude                 # .claude/skills + .claude/agents/vault-reader.md
+vaulty setup agents                 # .agents/skills (Codex, Gemini CLI, OpenCode, pi)
+vaulty setup pi                     # .pi/skills
+vaulty setup claude codex --global  # ~/.claude, ~/.agents
+vaulty setup pi --dir ../notes --dry-run
+```
+
+Installs the skills that ship with this binary (`vaulty-read`,
+`vaulty-write`, `vaulty-maintain`, `vaulty-setup`) for one or more agent
+harnesses; `claude` also gets the read-only `vault-reader` agent. Targets:
+
+| target | aliases | installs into (project / `--global`) |
+|---|---|---|
+| `agents` | `codex`, `gemini`, `opencode` | `.agents/skills` / `~/.agents/skills` |
+| `claude` | | `.claude/skills`, `.claude/agents` / `~/.claude/...` |
+| `pi` | | `.pi/skills` / `~/.pi/agent/skills` |
+
+Files go into the vault root by default, `--dir` for another project
+directory, `--global` for the home directory. Each target root gets a
+`.vaulty-setup.json` manifest with a checksum per installed file, so
+rerunning `setup` after upgrading vaulty updates the skills. A file that
+exists but wasn't installed by `setup`, or was edited since, is a conflict:
+nothing is written and the command exits 3 unless `--force` is given.
+`--dry-run` shows the plan; `--json` prints it.
+
+Pick one target per harness: pi reads both `.agents/skills` and
+`.pi/skills`, and OpenCode reads both `.agents/skills` and
+`.claude/skills`, so installing both shows each skill twice.
+
 ### `config print`
 
 ```bash
@@ -336,19 +392,23 @@ An annotated copy ships at [`examples/vaulty.yml`](examples/vaulty.yml).
 
 ## Using with Claude Code / LLM agents
 
-`vaulty` is built to sit behind an agent. This repo is also a Claude Code
-plugin with skills for reading (`vaulty-read`), writing (`vaulty-write`)
-and maintaining (`vaulty-maintain`) a vault, plus a read-only
-`vault-reader` subagent:
+`vaulty` is built to sit behind an agent. It ships skills for reading
+(`vaulty-read`), writing (`vaulty-write`), maintaining (`vaulty-maintain`)
+and configuring (`vaulty-setup`) a vault, plus a read-only `vault-reader`
+subagent for Claude Code.
 
-```
-/plugin marketplace add toppynl/vaulty
-/plugin install vaulty@vaulty
-```
+- **Any harness**: `vaulty setup <claude|agents|pi>` installs them into the
+  vault (see [`setup`](#setup)); the [prompt above](#let-your-agent-set-it-up)
+  has an agent do the whole setup.
+- **Claude Code plugin**: this repo is also a plugin marketplace:
 
-Not using plugins? Copy `skills/` and `agents/` into the vault's
-`.claude/`. See [`docs/claude-code.md`](docs/claude-code.md) for
-permissions, the lint-on-edit hook and hardening.
+  ```
+  /plugin marketplace add toppynl/vaulty
+  /plugin install vaulty@vaulty
+  ```
+
+See [`docs/claude-code.md`](docs/claude-code.md) for permissions, the
+lint-on-edit hook and hardening.
 
 ## Content boundary
 

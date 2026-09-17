@@ -40,10 +40,9 @@ Legacy debt is frozen per page, so it may shrink but not grow.
 Suggest these changes to the user; they change permissions and hooks, so
 don't apply them silently.
 
-1. **Config**: `.vaulty.yml` at the vault root. Every key is optional;
-   `vaulty config print` shows the effective values. The key setting is
-   `dirs` (content dirs; `.` means the whole root). Set `search.analyzers`
-   for stemming languages, e.g. `[en]` or `[nl, en]`.
+1. **Config**: `.vaulty.yml` at the vault root; the vaulty-setup skill
+   walks through writing it with the user. `vaulty config print` shows
+   the effective values.
 2. **Permission**: `"Bash(vaulty:*)"` in `.claude/settings.json`
    `permissions.allow`. Also deny Edit/Write on `.vaulty-baseline.json`,
    `.vaulty.yml` and `.claude/settings*.json`.

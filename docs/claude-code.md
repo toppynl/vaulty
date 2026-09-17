@@ -27,15 +27,17 @@ The plugin ships:
 |---|---|
 | `vaulty-read` skill | find pages (`find`/`search`) and read compiled truth, sections or Timeline history |
 | `vaulty-write` skill | append Timeline entries (`--touch`) and log entries instead of hand-editing |
-| `vaulty-maintain` skill | lint, fix findings, respect the ratchet baseline, set vaulty up in a vault |
+| `vaulty-maintain` skill | lint, fix findings, respect the ratchet baseline, wire vaulty into a vault |
+| `vaulty-setup` skill | interview the user and write `.vaulty.yml` for their vault |
 | `vault-reader` agent | read-only haiku subagent: returns verbatim fragments + verdict, keeps page text out of the main context |
 
 The plugin version follows vaulty releases, so the skills match the
 latest binary. The plugin ships no hooks or permissions: those change how
 a vault behaves and are opt-in (below).
 
-Without plugins, copy `skills/*` into the vault's `.claude/skills/` and
-`agents/vault-reader.md` into `.claude/agents/`. Vault-specific rules
+Without plugins, `vaulty setup claude` installs the same skills and agent
+into the vault's `.claude/` (`--global` for `~/.claude/`); rerun it after
+upgrading vaulty. Vault-specific rules
 (which dirs matter, index conventions, commit policy) belong in the
 vault's own CLAUDE.md or a local agent that builds on these.
 
