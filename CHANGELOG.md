@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/toppynl/vaulty/compare/v0.2.0...v0.3.0) (2026-09-17)
+
+
+### Features
+
+* ship a Claude Code plugin with vault read/write/maintain skills ([#16](https://github.com/toppynl/vaulty/issues/16)) ([5b5aead](https://github.com/toppynl/vaulty/commit/5b5aead708441f455f2febfe8dbcc163e61b46b9))
+
 ## [0.2.0](https://github.com/toppynl/vaulty/compare/v0.1.0...v0.2.0) (2026-09-17)
 
 
