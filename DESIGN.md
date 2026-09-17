@@ -86,6 +86,8 @@ internal/vault/           root discovery, page resolution, walking, globs
 internal/doc/             raw bytes + line index + frontmatter span (no normalizing)
 internal/timeline/        dates, Parse, sort/serialize (oracle port), Append
 internal/lint/            TL*/PG* checks, modes, counts
+internal/setup/           `vaulty setup`: install embedded skills/agents per harness (§20)
+embed.go                  package vaulty: embeds skills/ and agents/ for `setup`
 internal/safety/          pre-write verification shared by every writer
 internal/diag/            Diag type + codes
 scripts/parity/           vault round-trip live proof (package parity, step 2)
@@ -93,7 +95,7 @@ scripts/install.sh        installer (step 5)
 testdata/golden/          CLI golden cases (synthetic content only, §10.2)
 examples/vaulty.yml       documented defaults
 .claude-plugin/           Claude Code plugin + single-plugin marketplace manifest
-skills/, agents/          plugin skills (vaulty-read/-write/-maintain) and vault-reader agent
+skills/, agents/          plugin skills (vaulty-read/-write/-maintain/-setup) and vault-reader agent
 docs/claude-code.md       wiring vaulty into a vault's Claude Code setup
 .goreleaser.yaml, .github/workflows/{ci,release}.yml
 ```
@@ -2473,3 +2475,58 @@ decimals.
 | 0 | Results printed, or no hits (nothing on stdout, `vaulty: 0 hits (type counts: none)` on stderr) |
 | 2 | Empty query (no terms, `key:value`, `--where` or `--type`), unparseable query (unterminated quote, lone `-`, `*`/`~` without a term, `~N` other than 1/2, `key:` without a value, terms with nothing searchable), malformed `--where`, invalid config (including unknown `search.analyzers`) |
 | 4 | The corpus can't be walked, or the in-memory index can't be built |
+
+## 20. `vaulty setup <target>...`
+
+Installs the skills and agents that ship in this repo (embedded in the
+binary by the root `vaulty` package, so a binary always installs the
+matching release's files) into the locations agent harnesses read.
+Implemented in `internal/setup` plus `internal/cli/setup.go`.
+
+### 20.1 Targets
+
+| target | aliases | project root | `--global` root | contents |
+|---|---|---|---|---|
+| `agents` | `codex`, `gemini`, `opencode` | `.agents` | `~/.agents` | `skills/*` |
+| `claude` | | `.claude` | `~/.claude` | `skills/*`, `agents/*` |
+| `pi` | | `.pi` | `~/.pi/agent` | `skills/*` |
+
+`.agents/skills` is the shared Agent Skills location: Codex reads it (repo
+and `$HOME`), and Gemini CLI, OpenCode and pi read it next to their own
+directories. Only Claude Code gets the `vault-reader` agent: the other
+harnesses either have no subagents or use a different agent format.
+Duplicate-target aliases (`codex gemini`) install once. The project dir is
+the vault root (normal discovery, §3.2), `--dir <path>` (must exist), or the
+home dir with `--global`; `--dir` and `--global` are mutually exclusive.
+
+### 20.2 Ownership and upgrades
+
+Every target root keeps `.vaulty-setup.json`:
+`{"version": "<vaulty version>", "files": {"skills/vaulty-read/SKILL.md": "<sha256>", ...}}`.
+Per file:
+
+| on disk | status | written |
+|---|---|---|
+| missing | `created` | yes |
+| same bytes | `unchanged` | no |
+| differs, sha256 matches the manifest | `updated` | yes |
+| differs, not in the manifest, or edited since | `conflict` | only with `--force` |
+| not a regular file (symlink, dir) | `conflict` | only with `--force` (replaced, never written through) |
+
+The plan for every target is built before anything is written; any conflict
+without `--force` writes nothing. Files removed from a later release are
+left in place. `--dry-run` prints the plan and writes nothing.
+
+Output: per target a `<target> (<harnesses>):` line, then one
+`  <status> <path relative to the project dir>` line per file (`would be
+created`/`would be updated` under `--dry-run` or a refusal). `--json`:
+`{"dry_run": bool, "targets": [{"target", "root", "files": [{"path",
+"dest", "status", "reason"?}]}]}`; `dry_run` is also true when conflicts
+blocked the write.
+
+| Exit | When |
+|---|---|
+| 0 | Installed, or dry run without conflicts |
+| 2 | No or unknown target, `--dir` not a directory, `--dir` with `--global`, no vault root found without `--dir`/`--global` |
+| 3 | Conflicts without `--force` (nothing written) |
+| 4 | Read/write failure, unreadable manifest |
