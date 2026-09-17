@@ -243,12 +243,16 @@ func clauseQuery(c Clause, groups, analyzers []string, boosted bool) query.Query
 			for _, a := range append(append([]string{}, analyzers...), rawAnalyzer) {
 				mq := bleve.NewMatchQuery(c.Text)
 				mq.SetField(groupField(g, a))
+				// Explicit: bleve resolves analyzers by document path,
+				// which a "<group>_<analyzer>" sub-field name isn't.
+				mq.Analyzer = a
 				mq.SetBoost(boost(g))
 				subs = append(subs, mq)
 			}
 		case kindPhrase:
 			pq := bleve.NewMatchPhraseQuery(c.Text)
 			pq.SetField(rawField)
+			pq.Analyzer = rawAnalyzer
 			pq.SetBoost(boost(g))
 			subs = append(subs, pq)
 		case kindFuzzy:

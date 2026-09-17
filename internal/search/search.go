@@ -226,6 +226,12 @@ func finish(resp *Response, sr *bleve.SearchResult, corp *corpus, q *Query, opts
 		hl = newHighlighter(ans, im.AnalyzerNamed(rawAnalyzer), q.Clauses)
 	}
 
+	// bleve's BM25 keeps Lucene-classic query normalization and coord
+	// factors, so raw scores are tiny and depend on how many field/analyzer
+	// sub-queries the query expanded into. Report them relative to the best
+	// hit (1.00); the order is bleve's own (DESIGN.md §19.2).
+	top := sr.MaxScore
+
 	resp.Results = []Result{}
 	for _, h := range sr.Hits {
 		r := Result{Path: h.ID, Snippets: []Snippet{}}
@@ -233,7 +239,9 @@ func finish(resp *Response, sr *bleve.SearchResult, corp *corpus, q *Query, opts
 		r.Title, _ = h.Fields[fieldTitle].(string)
 		r.Summary, _ = h.Fields[fieldSummary].(string)
 		if q.Positive() {
-			r.Score = math.Round(h.Score*100) / 100
+			if top > 0 {
+				r.Score = math.Round(h.Score/top*10000) / 10000
+			}
 			if src, err := os.ReadFile(filepath.Join(corp.v.Root, filepath.FromSlash(h.ID))); err == nil {
 				pg := parsePage(h.ID, src, r.Summary, corp.v.Config.Timeline)
 				r.Snippets = hl.snippets(pg, opts.Timeline)
