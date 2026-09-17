@@ -2,8 +2,16 @@
 
 `vaulty` is a single static Go binary for LLM-maintained markdown vaults
 (Peep's `me` vault and vaults created from `me-template`). The first scope is
-the `## Timeline` convention: `vaulty timeline lint|read|append`. The command
-tree leaves room for `index`, a general `lint`, `migrate`, `dream` and similar.
+the `## Timeline` convention: `vaulty read`, `vaulty lint` and
+`vaulty timeline append`. Section and frontmatter edits (`vaulty write`,
+`vaulty frontmatter`, §21–§22) came later. The command tree leaves room for
+`index`, `migrate`, `dream` and similar.
+
+**Renamed (breaking).** `timeline read` and `timeline lint` moved to the
+top-level `read` and `lint`, with unchanged flags and no aliases;
+`timeline` keeps only `append`, and any other `timeline` subcommand exits 2
+instead of printing help (a stale hook calling `timeline lint --hook` must
+fail loudly, not pass). Sections below keep their numbers.
 
 The reference oracle is `scripts/lib/timeline.mjs` plus `scripts/timeline-asc.mjs`
 in the me vault. It was verified zero-loss on all 719 vault files. Go's parse
@@ -84,7 +92,9 @@ internal/cli/             cobra tree, flag parsing, human/JSON rendering, exit c
 internal/config/          .vaulty.yml schema, defaults, Load/Validate
 internal/vault/           root discovery, page resolution, walking, globs
 internal/doc/             raw bytes + line index + frontmatter span (no normalizing)
-internal/timeline/        dates, Parse, sort/serialize (oracle port), Append
+internal/timeline/        dates, Parse, sort/serialize (oracle port), Append, Touch
+internal/section/         section region, hash and replace/append/after edits for `write` (§21)
+internal/frontmatter/     line-based frontmatter parse/edit/verify for `frontmatter` (§22)
 internal/lint/            TL*/PG* checks, modes, counts
 internal/setup/           `vaulty setup`: install embedded skills/agents per harness (§20)
 embed.go                  package vaulty: embeds skills/ and agents/ for `setup`
@@ -132,10 +142,17 @@ CGO disabled.
 
 ```
 vaulty [--vault DIR] [--json]
+├── read   <page> [--timeline] [--since DATE] [--last N] [--frontmatter] [--headings] [--section HEADING] [--max-bytes N]
+├── lint   [paths...] [--hook] [--changed[=REF]] [--warnings] [--strict] [--write-baseline] [--accept-growth] [--check-baseline [--staged]]
 ├── timeline
-│   ├── lint   [paths...] [--hook] [--changed[=REF]] [--warnings] [--strict] [--write-baseline]
-│   ├── read   <page> [--timeline] [--since DATE] [--last N] [--frontmatter] [--headings] [--section HEADING] [--max-bytes N]
 │   └── append <page> "<entry>" [--touch] [--dry-run]
+├── write <page> (--section HEADING (--if-hash HASH | --append) | --after HEADING) [--touch] [--dry-run]   (content on stdin)
+├── frontmatter
+│   ├── get    <page> [key...]
+│   ├── set    <page> key=value... [--touch] [--dry-run]
+│   ├── add    <page> <key> <value>... [--touch] [--dry-run]
+│   ├── remove <page> <key> <value>... [--touch] [--dry-run]
+│   └── unset  <page> <key>... [--touch] [--dry-run]
 ├── log
 │   ├── append <op> <title> [--body TEXT] [--date YYYY-MM-DD]
 │   ├── last   [-n|--n N] [--op OP] [--since DATE]
@@ -143,6 +160,7 @@ vaulty [--vault DIR] [--json]
 ├── find [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--where KEY=VALUE] [--json]
 ├── search <query...> [--only DIR|GLOB] [--type T] [--where KEY=VALUE] [--limit N] [--timeline] [--no-cache] [--rebuild] [--json]
 │   └── --stats [--json]              (cache path, pages, index size, last update)
+├── setup <target>... [--global] [--dir DIR] [--force] [--dry-run]   (§20)
 ├── config print                     (step 1: effective config + root + config path)
 └── version / --version
 ```
@@ -153,14 +171,14 @@ take their names for anything else:
 | Command | Purpose |
 |---|---|
 | `index` | Check or regenerate `index.md` lines |
-| `lint` | Umbrella: runs `timeline lint` plus dead links, orphans, frontmatter schema, hot.md date/size checks |
 | `migrate timeline-asc` | Port of `timeline-asc.mjs` on top of `SortAscending` + `safety.Verify{PreserveBlankCount}` |
 | `dream extract` | Dream-routine extraction |
 | `backlinks` | Backlink queries |
 
-`timeline lint` hosts the two page checks (PG001, PG002) because both are
-defined relative to the Timeline divider. The later umbrella `vaulty lint`
-calls into the same `lint` package.
+`lint` (formerly `timeline lint`) hosts the page checks (PG001, PG002) and
+shard checks (§16) next to the Timeline checks. Further vault checks (dead
+links, orphans, frontmatter schema, hot.md date/size) belong in the same
+command and the same `lint` package, not in a new top-level name.
 
 ### 3.2 Global flags and environment
 
@@ -208,7 +226,7 @@ All four errors exit with code 2.
 | 0 | success; lint found no error-severity findings (warnings allowed unless `--strict`) |
 | 1 | lint: at least one error-severity finding (or warning under `--strict`) |
 | 2 | usage: bad flag/arg, page not found/ambiguous/outside, invalid config, git ref missing. **Also `lint --hook` with findings** (Claude Code PostToolUse feeds stderr back to the model only on exit 2) |
-| 3 | refused: append validation failed, page state unsafe to write, safety check failed, file changed during write |
+| 3 | refused: append validation failed, page state unsafe to write, safety check failed, file changed during write, `write --if-hash` mismatch, unsupported frontmatter shape |
 | 4 | I/O error reading/writing a file |
 
 In hook mode, an internal failure (unreadable config, parser panic caught by
@@ -236,7 +254,7 @@ symlink inside `wiki/` pointing at `.git/config`, a symlinked directory,
 `wiki/../.git/config`, an absolute path or a `[[wikilink]]` spelling all
 end the same way. The check applies at every read and write:
 
-- page arguments (`timeline read|append|lint`, name and path mode), exit 2;
+- page arguments (`read`, `lint`, `timeline append`, `write`, `frontmatter`, name and path mode), exit 2;
 - `Walk`, and therefore `find`, `search`, name resolution and vault-wide lint;
 - `lint --changed` and `--hook`, which silently skip non-content;
 - every `search` hit before it is printed, so a stale cache entry for a
@@ -261,7 +279,7 @@ Choices:
   any file under the root.
 - **`exclude` is part of the boundary.** Excluded means "not content",
   for reads as well as scans.
-- **Non-markdown is out.** `timeline read wiki/data.txt` is refused.
+- **Non-markdown is out.** `read wiki/data.txt` is refused.
 
 ---
 
@@ -646,7 +664,7 @@ parity corpus file.
 
 ---
 
-## 6. `vaulty timeline lint`
+## 6. `vaulty lint`
 
 ### 6.1 Checks and default severities
 
@@ -718,7 +736,7 @@ unaffected until someone opts in.
 Ratchet severity is computed before `lint.severity` overrides, so an
 explicit override in `.vaulty.yml` still wins.
 
-**Writing/updating the baseline.** `vaulty timeline lint --write-baseline`
+**Writing/updating the baseline.** `vaulty lint --write-baseline`
 (vault mode only; no positional args) recomputes TL006/TL008 counts and the
 PG002 token count for every page in `Walk()`.
 
@@ -752,7 +770,7 @@ fixing the flagged page or asking Peep instead.
    on-disk file, whenever the vault is a git repo. This closes two ways
    the shrink-only rule above could otherwise be defeated by a plain
    `Bash(vaulty:*)`-permitted command: `rm .vaulty-baseline.json &&
-   vaulty timeline lint --write-baseline` (no `old` on disk, so the naive
+   vaulty lint --write-baseline` (no `old` on disk, so the naive
    rule treats it as first creation, growth included) and hand-raising a
    value on disk before running `--write-baseline` (the disk file would
    then be its own growth reference, so nothing looks like growth). A
@@ -953,7 +971,9 @@ Exit code: 1 if `errors > 0`, or if `--strict` and `warnings > 0`; else 0.
 
 `vaulty timeline append` runs through the Bash tool, not Edit or Write, so
 it does not trigger the hook. That is intended: appending a Timeline line is
-not a touch of compiled truth.
+not a touch of compiled truth. `vaulty write` and `vaulty frontmatter` also
+run through Bash and don't trigger it either; the vaulty-write skill has the
+agent run `vaulty lint <path>` after editing instead.
 
 ### 6.5 Expected numbers on the real vault (step 3 acceptance)
 
@@ -995,7 +1015,7 @@ TL008 stayed exactly 67, unaffected.
 
 ---
 
-## 7. `vaulty timeline read <page>`
+## 7. `vaulty read <page>`
 
 **Default mode** prints the compiled-truth span with leading and trailing
 blank lines trimmed, followed by one final `\n`. With `--frontmatter`, the
@@ -1059,7 +1079,9 @@ terse like Timeline mode): `<line>\t<### text>\t<lines>\t<bytes>`, e.g.:
 14	### Background Detail	4	44
 ```
 
-`--json`: `{"path":"...", "headings":[{"line":9,"level":2,"text":"Background","lines":9,"bytes":102}], "diags":[...]}`.
+`--json`: `{"path":"...", "headings":[{"line":9,"level":2,"text":"Background","lines":9,"bytes":102,"hash":"1a2b3c4d5e6f"}], "diags":[...]}`.
+`hash` is the section hash from §7.2, so an agent that already listed the
+headings as JSON can pass it straight to `write --if-hash` (§21).
 
 A page with no headings prints nothing (human) / an empty `headings` array
 (json), exit 0 — same best-effort contract as the rest of `read`.
@@ -1071,9 +1093,19 @@ caller their combination doesn't apply.
 ### 7.2 `--section <heading text>`
 
 Prints one section: from the matching heading's line through the byte
-before the next heading of level ≤ its own, or EOF (i.e. exactly the span
-`--headings` reports for it), with leading/trailing blank lines trimmed —
-nested sub-headings are included, since they're part of that section.
+before the next heading of level ≤ its own, a standalone `---` line, or EOF
+(the span `--headings` reports for it), with leading/trailing blank lines
+trimmed — nested sub-headings are included, since they're part of that
+section. For a heading inside compiled truth the region is also clamped to
+the compiled-truth end (§5.2), so the last section never includes the
+divider or the Timeline block (`section.Region`, shared with `write`).
+
+After the section, `vaulty: section hash <hash>` goes to stderr, so stdout
+stays exactly the section text. `<hash>` is the first 12 hex characters of
+the sha256 of the untruncated region text (`section.Hash`), whatever
+`--max-bytes` cut; it is what `write --if-hash` compares (§21). A heading
+below the divider (the Timeline) still prints a hash, but `write` refuses
+that section.
 
 The query is matched against heading text with any leading `#`s and
 surrounding whitespace the caller included stripped first, so `--section
@@ -1082,6 +1114,7 @@ all match the same heading. Matching is exact and case-sensitive on the
 remaining text; the first match in file order wins when a vault has two
 identically-named headings (rare — same convention as page names being
 unique by convention, §3.3; a golden fixture pins first-match-wins).
+`write` does not follow this: it refuses an ambiguous heading (§21).
 
 No match: exit 2, with a suggestion instead of a bare "not found" whenever
 one is available (`sectionNotFoundError`, `internal/cli/read.go`) — an
@@ -1105,8 +1138,8 @@ and a section is not that block, so silently ignoring them (the original
 behavior) risked masking a caller's mistaken assumption that they'd
 somehow narrow the section output.
 
-`--json`: adds `"section":{"line":9,"heading":"Background","text":"..."}`
-in place of `compiled_truth`/`entries`.
+`--json`: adds `"section":{"line":9,"heading":"Background","text":"...","hash":"1a2b3c4d5e6f"}`
+in place of `compiled_truth`/`entries` (no stderr hash line in JSON mode).
 
 ### 7.3 `--max-bytes N`
 
@@ -1474,7 +1507,7 @@ file still trips TL007 (§6.5), it just no longer prevents round-tripping.
 
 Second live proof, on the same scratch copy: `vaulty timeline append` on a
 handful of representative pages (one plain, one with month-only entries, one
-with no Timeline yet), each followed by `vaulty timeline lint`, must show no
+with no Timeline yet), each followed by `vaulty lint`, must show no
 lost content and the entry landing in the right (ascending) position. This
 is a manual/scripted smoke test, not a `go test` target (§14 step 4's
 done-when). Verified 2026-09-15 on the three page shapes above (a gap-1
@@ -1597,7 +1630,7 @@ vault.
 "PostToolUse": [
   { "matcher": "Edit|Write|MultiEdit",
     "hooks": [ { "type": "command",
-      "command": "command -v vaulty >/dev/null 2>&1 || exit 0; vaulty timeline lint --hook" } ] }
+      "command": "command -v vaulty >/dev/null 2>&1 || exit 0; vaulty lint --hook" } ] }
 ]
 ```
 
@@ -1606,20 +1639,19 @@ vault.
 
 - **vault-reader agent.** Add `Bash` to its tools. In its rules, replace
   "Read the page, stop at the divider" with:
-  - `vaulty timeline read <name>` for compiled truth;
-  - `vaulty timeline read <name> --since YYYY-MM-DD` or `--last N` only when
+  - `vaulty read <name>` for compiled truth;
+  - `vaulty read <name> --since YYYY-MM-DD` or `--last N` only when
     the question asks for history or "wanneer".
 
-  For large pages, grep for headings and read by offset, until a `--section`
-  option exists.
+  For large pages, `vaulty read <name> --headings`, then `--section`.
 - **ingest skill, step 5,** plus brief-watch, correction-capture, the weekly
   review, and every "append a Timeline line" instruction: use
   `vaulty timeline append <page> "- **YYYY-MM-DD** | [[P]] — reason"`. Add
   `--touch` only where the skill wants `updated:` bumped, which is not the
   case for backlink log lines.
 - **lint skill.** In the "work material" section, run
-  `vaulty timeline lint --changed` for touched pages (findings must be
-  fixed) and `vaulty timeline lint` for the vault-wide counts.
+  `vaulty lint --changed` for touched pages (findings must be
+  fixed) and `vaulty lint` for the vault-wide counts.
 
 ---
 
@@ -1727,10 +1759,9 @@ creating the GitHub remote, and adding commands beyond §3.1.
 
 ## 16. Shard lint checks (SH001-SH005)
 
-Hosted in `vaulty timeline lint` (there is no standalone `vaulty lint` yet —
-§3.1 reserves that name; PG001/PG002 already set the precedent of hosting a
-non-Timeline hygiene check here rather than waiting for the umbrella
-command). Implemented in `internal/lint/shard.go`; codes in
+Hosted in `vaulty lint` (then still `timeline lint`; PG001/PG002 had
+already set the precedent of hosting a non-Timeline hygiene check there
+rather than waiting for a separate command). Implemented in `internal/lint/shard.go`; codes in
 `internal/diag/diag.go`.
 
 ### 16.1 The convention these checks enforce
@@ -1827,7 +1858,7 @@ there is nothing to exempt.
   vault, a directory subset, explicit files, `--changed`, or the one
   `--hook` file) — a hub directory's findings are kept only when that scope
   *touches* it: its hub file, or at least one of its children, is in
-  `files`. This makes `vaulty timeline lint wiki/systems/x.md` or a
+  `files`. This makes `vaulty lint wiki/systems/x.md` or a
   `--hook` run on one child feel exactly as scoped as every other check,
   instead of a single-file lint suddenly reporting on hub directories
   elsewhere in the vault. A hub directory's children, for this check, are
@@ -1933,7 +1964,7 @@ last` (§17.3) uses it before applying `--n`.
 
 `--date` defaults to today (`$VAULTY_TODAY` or the local date, like
 `--touch`, §8.5); given explicitly it must be a full `YYYY-MM-DD` date or
-the command exits 2 (usage — same class of error as `timeline read
+the command exits 2 (usage — same class of error as `read
 --since` with a bad date).
 
 `op` and `title` are trimmed, then `op`, `title` and `--body` (when given)
@@ -2000,7 +2031,7 @@ comment beside `appendLogEntry`). `--json`:
 
 ### 17.3 `log last [-n|--n N] [--op OP] [--since DATE]`
 
-Best-effort and scriptable, like `timeline read`: parses the whole file,
+Best-effort and scriptable, like `read`: parses the whole file,
 prints one stderr warning per malformed heading found (`<path>:<line>:
 malformed log entry, skipped: <reason>`) and otherwise ignores them — never
 a fatal error. A missing log file behaves as zero entries (not an error);
@@ -2008,7 +2039,7 @@ an unreadable one (permission, or a directory at that path) is exit 4 (I/O).
 `-n`/`--n` (both forms; `-n` is the short flag) accepts the same value.
 
 Filters apply first: `--op OP` keeps exact (case-sensitive) op matches;
-`--since DATE` (same `YYYY-MM-DD`/`YYYY-MM` parsing as `timeline read
+`--since DATE` (same `YYYY-MM-DD`/`YYYY-MM` parsing as `read
 --since`) keeps `Date >= since` by plain ISO string comparison (valid
 since the format is fixed-width `YYYY-MM-DD`). The result is then
 **stable-sorted by date** (`vaultlog.SortByDate`, ascending, file order
@@ -2019,7 +2050,7 @@ points in the real vault), so skipping this sort would make "last N" mean
 query like `--op lint -n 1` needs the latter to return the actual most
 recent `lint` entry rather than whichever happened to be filed last.
 `--n` (default 10) keeps the last N after sorting — `0` means all,
-matching `timeline read --last`'s convention; `N < 0` is a usage error
+matching `read --last`'s convention; `N < 0` is a usage error
 (exit 2).
 
 Human output reprints each kept entry exactly as `vaultlog.Format` would
@@ -2049,7 +2080,7 @@ file:
   something — just never fatal, and never folded into `Malformed`.
 
 Human mode, one line per finding on stdout: malformed as `<path>:<line>:
-malformed: <reason>: <text>` (mirroring `timeline lint`'s `path:line: CODE
+malformed: <reason>: <text>` (mirroring `lint`'s `path:line: CODE
 severity: message` shape, §6.3); out-of-order as `<path>:<line>: warning
 out-of-order: entry dated <date> appears after <prev_date> (line
 <prev_line>)` (the `warning` token makes the exit-code asymmetry legible
@@ -2060,20 +2091,20 @@ in the output itself, not just in this doc). `--json`: `{"path":...,
 about real defects can ignore `out_of_order` entirely.
 
 Exit 1 only if `malformed` is non-empty (`ExitFindings`, same convention
-as `timeline lint`); exit 0 otherwise, `out_of_order` findings included —
+as `lint`); exit 0 otherwise, `out_of_order` findings included —
 including when the file doesn't exist yet. A separate subcommand rather
 than folding this into `log last` because `last`'s job is best-effort
 reading (never fail the read over data quality — it already corrects for
 out-of-order dates itself, §17.3) while `lint`'s job is exactly the
 opposite: surface every finding as the primary result, for a periodic
-vault-health pass (alongside `timeline lint`) rather than every `log
+vault-health pass (alongside `lint`) rather than every `log
 last` call.
 
 ## 18. `vaulty find [<term>...]`
 
 Replaces raw `grep -r`/`find` as the LLM reader agent's discovery step over
 the vault: term(s) in, ranked vault-relative page paths out, ready to pass
-to `vaulty timeline read`. Implemented in `internal/find` (scoring, pure of
+to `vaulty read`. Implemented in `internal/find` (scoring, pure of
 any CLI concerns) plus `internal/cli/find.go` (command tree + rendering),
 mirroring the `timeline`/`log` package split.
 
@@ -2205,7 +2236,7 @@ their own slug/frontmatter/H1/body.
 ### 18.4 `--body`
 
 Scans the page's compiled-truth span (`timeline.Parse`'s `CompiledTruth`,
-§5.2 — the same span `timeline read`'s default mode prints, i.e. above the
+§5.2 — the same span `read`'s default mode prints, i.e. above the
 Timeline divider, frontmatter excluded) line by line, for whichever terms
 didn't already match a higher-weight field (§18.2). For each such term,
 scanning stops at its first matching line (one body match per term, not
@@ -2530,3 +2561,162 @@ blocked the write.
 | 2 | No or unknown target, `--dir` not a directory, `--dir` with `--global`, no vault root found without `--dir`/`--global` |
 | 3 | Conflicts without `--force` (nothing written) |
 | 4 | Read/write failure, unreadable manifest |
+
+## 21. `vaulty write <page>`
+
+Edits one compiled-truth section with content read from stdin, so an agent
+changes a part of a page without reading or rewriting the whole page.
+Implemented in `internal/section` (region, hash, edit building) plus
+`internal/cli/write.go`; the pre-write check is `safety.VerifySection`.
+
+### 21.1 Modes
+
+Exactly one of:
+
+| Invocation | Effect | Stdin |
+|---|---|---|
+| `--section H --if-hash HASH` | replace `H`'s region | the whole section, starting with a heading at `H`'s level (its text may differ: a rename) |
+| `--section H --append` | insert at the end of `H`'s region, after one blank line | body text; headings only deeper than `H` |
+| `--after H` | insert a new section after `H`'s region, after one blank line | starts with a heading at `H`'s level or deeper |
+
+`H` is matched like `read --section` (leading `#`s and surrounding
+whitespace stripped, then exact and case-sensitive), but a query matching
+more than one heading is ambiguous and exits 2 instead of taking the first:
+writing the wrong one of two same-named sections is not recoverable from
+the output. The region is `section.Region` (§7.2): heading line to the next
+heading of the same or a higher level, a standalone `---` or EOF, clamped
+to the compiled-truth end, blank edge lines trimmed. `--append` on a
+section with subheadings therefore lands after its last subsection, and
+`--after` after all of them.
+
+Stdin has blank leading/trailing lines trimmed; empty stdin exits 2.
+Replacing needs `--if-hash`: without it the command exits 2 and names the
+`read --section` call that prints the hash. `--section` with `--after`, and
+`--append` without `--section`, exit 2. `--touch` sets
+`frontmatter.updated_key` to today exactly as `timeline append --touch`
+does (§8.5, the shared `timeline.Touch`); unclosed frontmatter with
+`--touch` is refused.
+
+### 21.2 Refusals (exit 3, nothing written)
+
+| Condition | Why |
+|---|---|
+| `H` is the Timeline heading or below the divider | history is append-only; the message points at `timeline append` |
+| `--if-hash` differs from the current region's hash | the section changed since it was read; re-read, don't force |
+| replacement or new section doesn't start with a heading line, or the level is wrong | same level for replace; `H`'s level or deeper for `--after` — a shallower heading would swallow the sections after it |
+| a later heading in stdin at or above the lead heading's level (replace, `--after`), or at or above `H`'s level (`--append`) | it would end the section early and turn the rest into a different section |
+| the new lead heading text already exists elsewhere on the page | the next `write --section` on it would be ambiguous. Only the lead heading is checked, not subheadings inside stdin |
+| stdin contains a standalone `---` line or a Timeline heading | caught by the read-back check below: the region would end early |
+| file changed between read and write | concurrent edit |
+
+### 21.3 Safety check (`safety.VerifySection`, before every write, including `--dry-run`)
+
+The edit is `orig[RegionStart:RegionEnd]` replaced by `NewRegion`
+(`RegionStart == RegionEnd` for an insert). On `next`:
+
+1. Frontmatter byte-equal, or with `--touch` equal except the updated line.
+2. Bytes between the frontmatter and the region equal.
+3. `NewRegion` found at the (frontmatter-shifted) region offset.
+4. Bytes after the region equal.
+5. Read-back: a heading starts at the written section's offset, and its
+   `section.Region` text is exactly the expected section text. This is
+   what catches a `---` line or Timeline heading in stdin, and it
+   guarantees the next `read --section` hash is the one `--json` reports.
+6. Timeline: same block count, bytes from the compiled-truth end on
+   identical, each block's heading, body, divider and entries equal.
+7. Every heading outside the region unchanged.
+
+Then the file is re-read and compared with `orig` (§8.7), and written
+atomically.
+
+### 21.4 Output and exit codes
+
+Human mode: `wrote <path>:<line> (<mode> "<heading>")`, where `<line>` is
+the written section's heading line after the edit. `--dry-run` prints the
+resulting section text on stdout and `vaulty: dry-run, nothing written` on
+stderr.
+
+`--json`: `{"path","mode":"replace|append|after","heading","line","hash",
+"touched","dry_run"}`, `hash` being the section's hash after the write.
+
+| Exit | When |
+|---|---|
+| 0 | Written, or dry run that would write |
+| 2 | Missing/conflicting flags, no `--if-hash` to replace, empty stdin, page or section not found, ambiguous section |
+| 3 | Any refusal in §21.2 or failed safety check |
+| 4 | Read/write failure |
+
+## 22. `vaulty frontmatter get|set|add|remove|unset`
+
+Reads and edits a page's flat YAML frontmatter. Implemented in
+`internal/frontmatter` (`parse.go`, `edit.go`, `verify.go`) plus
+`internal/cli/frontmatter.go`.
+
+### 22.1 Behaviour
+
+The editor never decodes and re-encodes the block, which would reformat
+quotes, list style, indentation and key order on every write. It maps each
+top-level key to its lines and recognizes the shapes it can edit safely:
+
+- scalar: `key: value`, `key: "value"`, `key: 'value'`, bare `key:`, with
+  an optional trailing `# comment`;
+- flow list on one line: `key: [a, "b"]`;
+- block list: `key:` followed by `- item` lines.
+
+Anything else for the key being edited is unsupported. yaml.v3 is used to
+check the original parses and to verify the result (§22.3).
+
+| Subcommand | Effect |
+|---|---|
+| `get <page> [key...]` | no keys: the block between the `---` lines, as written; keys: each key's lines as written, `vaulty: no key <k>` on stderr for missing ones. `--json`: `{"path","frontmatter":{...}}` with yaml.v3-decoded values (dates as strings) |
+| `set <page> key=value...` | split on the first `=`; replace a scalar's value keeping its quote style and comment, or append `key: value` at the end of the block. Values are quoted when plain YAML would change them (e.g. `[[link]]`, `a: b`); an empty value writes `""`. Refuses a list key |
+| `add <page> <key> <value>...` | append items to a flow or block list in the list's own style, skipping values already present; a missing key becomes a flow list `key: [v]`. Refuses a scalar key |
+| `remove <page> <key> <value>...` | remove matching items; removing the last one leaves `key: []`. Refuses a scalar key |
+| `unset <page> <key>...` | remove the keys and all their lines |
+
+Keys must match `[A-Za-z0-9_-]+` (exit 2 otherwise). Ops apply in argument
+order. A page without frontmatter gets a new block for a change that adds a
+key. `--touch` sets `frontmatter.updated_key` to today only when some other
+key actually changed, and not when an op already targets that key (the
+explicit edit wins). A call that changes nothing writes nothing and prints
+`unchanged <path>`. A value starting with `-` needs a `--` before it, or
+cobra reads it as a flag.
+
+### 22.2 Refusals (exit 3, nothing written)
+
+| Condition |
+|---|
+| frontmatter opened but not closed |
+| frontmatter is not valid YAML, including a duplicate key |
+| the edited key has an unsupported shape: nested map, block scalar (`\|`, `>`), multi-line flow list, anything not listed in §22.1 |
+| `set` on a list, `add`/`remove` on a scalar |
+| failed safety check (§22.3) |
+| file changed between read and write |
+
+### 22.3 Safety check (`frontmatter.Verify`, before every write, including `--dry-run`)
+
+1. The result has a closed frontmatter block.
+2. Body bytes after the frontmatter are identical.
+3. Both frontmatters decode with yaml.v3.
+4. Every key no op touched decodes deep-equal to the original.
+5. Every edited key decodes to what replaying the ops on the decoded
+   original values gives (independent of the line editor).
+
+Then the file is re-read and compared with the original (§8.7) and written
+atomically.
+
+### 22.4 Output and exit codes
+
+Human mode: `updated <path>: <key>, <key>` (changed keys, including the
+touched key) or `unchanged <path>`. `--dry-run` prints the resulting
+frontmatter block, `---` lines included, and `vaulty: dry-run, nothing
+written` on stderr. `--json` for write subcommands:
+`{"path","changed":[...],"unchanged":[...],"touched","dry_run"}`.
+
+| Exit | When |
+|---|---|
+| 0 | Printed, written, dry run, or nothing to change |
+| 1 | `get`: the page has no frontmatter, or none of the requested keys exist |
+| 2 | Bad arguments (`set` without `=`, invalid key, too few args), page not found |
+| 3 | Any refusal in §22.2 |
+| 4 | Read/write failure |

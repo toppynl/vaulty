@@ -10,7 +10,7 @@ dirs: [wiki, me, now, archive]
 exclude: []
 
 frontmatter:
-  updated_key: updated          # bumped by `vaulty timeline append --touch`
+  updated_key: updated          # bumped by --touch (`timeline append`, `write`, `frontmatter`)
 
 timeline:
   heading: "## Timeline"        # exact heading line
