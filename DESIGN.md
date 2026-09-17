@@ -114,8 +114,10 @@ examples/vaulty.yml       documented defaults
 Go code must never hard-code the name; it uses `name.Binary` / `name.ConfigFile`.
 
 Dependencies are `github.com/spf13/cobra` and `gopkg.in/yaml.v3`, the same
-stack as `toppynl/clickup-cli`. Everything else is the standard library. The
-binary is built with CGO disabled.
+stack as `toppynl/clickup-cli`, plus `github.com/blevesearch/bleve/v2` for
+`search`'s index (§19; pure Go — its `go-faiss` dependency is never used at
+runtime). Everything else is the standard library. The binary is built with
+CGO disabled.
 
 ---
 
@@ -134,6 +136,8 @@ vaulty [--vault DIR] [--json]
 │   ├── last   [-n|--n N] [--op OP] [--since DATE]
 │   └── lint
 ├── find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--json]
+├── search <query...> [--only DIR|GLOB] [--type T] [--where KEY=VALUE] [--limit N] [--timeline] [--no-cache] [--rebuild] [--json]
+│   └── --stats [--json]              (cache path, pages, index size, last update)
 ├── config print                     (step 1: effective config + root + config path)
 └── version / --version
 ```
@@ -147,7 +151,7 @@ take their names for anything else:
 | `lint` | Umbrella: runs `timeline lint` plus dead links, orphans, frontmatter schema, hot.md date/size checks |
 | `migrate timeline-asc` | Port of `timeline-asc.mjs` on top of `SortAscending` + `safety.Verify{PreserveBlankCount}` |
 | `dream extract` | Dream-routine extraction |
-| `search`, `backlinks` | Ranked full-text/semantic search and backlink queries — distinct from `find` (§18), which is field-weighted discovery over slug/title/aliases/tags/index/H1(+body), not a text-search ranker |
+| `backlinks` | Backlink queries |
 
 `timeline lint` hosts the two page checks (PG001, PG002) because both are
 defined relative to the Timeline divider. The later umbrella `vaulty lint`
@@ -160,6 +164,7 @@ calls into the same `lint` package.
 | `--vault DIR` | Vault root. Beats everything else (§4.2). |
 | `--json` | One JSON document on stdout (schemas per command below). Diagnostics go into the JSON, never mixed into stdout. |
 | `VAULTY_ROOT` | Root override, below `--vault`. |
+| `VAULTY_CACHE_DIR` | Base cache directory for `search`'s index (default `os.UserCacheDir()/vaulty`); one subdirectory per vault (§19.3). |
 | `VAULTY_TODAY=YYYY-MM-DD` | Pins "today" for `--touch`, `log append`, future-date warnings and goldens. Validated once, in `Execute` before any command runs: a set-but-invalid value (not a real `YYYY-MM-DD` date) exits 2 with `$VAULTY_TODAY: invalid date "<value>" (want YYYY-MM-DD)` rather than silently propagating a garbage "today" into whatever the command was about to do. |
 
 Output conventions:
@@ -242,12 +247,24 @@ log:
 find:
   index: index.md          # vault-relative path `find` reads index summaries from;
                            # a missing file is skipped silently (§18)
+search:
+  analyzers: [standard]    # language analyzers text is indexed with (§19.2)
 ```
 
 `find`'s `--only <dir|glob>` flag (repeatable/comma-separated, §18.1) has
 no config key — it's a per-invocation narrowing, not a vault-wide setting,
 and is implemented generically in the `vault` package (`OnlyPatterns`,
-`FilterOnly`) so the later `search` command can take the same flag.
+`FilterOnly`), which `search` (§19) uses for the same flag.
+
+`search.analyzers` lists the analyzers every text field is indexed with, one
+sub-field each. The default `[standard]` is language-neutral (unicode words,
+lowercased, English stop words, no stemming). A vault in one or more stemmed
+languages lists them by code, e.g. `[nl, en]` for a bilingual Dutch/English
+vault; accepted names are `standard`, `simple` and bleve's language analyzers
+`ar cjk ckb da de en es fa fi fr hi hr hu it nl no pl pt ro ru sv tr`
+(`config.SearchAnalyzers`). Unknown or duplicate names are a config error.
+Every extra analyzer grows the index and the query; changing the list
+rebuilds the cached index (§19.3).
 
 `lint.overrides` is a list of glob-scoped exemptions, layered on top of
 `severity`/the baseline rather than replacing them:
@@ -1956,8 +1973,8 @@ already dropped) simply yields nothing for that invocation — never an
 error, since a caller narrowing to the wrong place should see "no
 matches", not a crash. Implemented generically in the `vault` package
 (`OnlyPatterns`, `FilterOnly`) rather than inside `internal/find`, since
-the later `search` command (§3.1's reserved table) is meant to take the
-same `--only` flag rather than invent its own notion of scope.
+`search` (§19) takes the same `--only` flag rather than inventing its own
+notion of scope.
 
 Matching tokenizes both the term and every candidate field the same way
 (`internal/find/find.go`'s `tokenize`): lowercase, split on every run of
@@ -2085,3 +2102,198 @@ JSON consumer should have to special-case with an extra nil check).
 `body` is present only on a result that actually recorded a body match
 (§18.4); it's absent (not an empty array) on every other result, including
 when `--body` was passed but that page matched entirely through metadata.
+
+## 19. `vaulty search <query...>`
+
+Content search for the LLM reader agent: a topic question in ("what do we
+know about delivery reliability"), ranked pages with a couple of highlighted
+source lines out, without reading whole pages. `find` (§18) is discovery by
+name and metadata; `search` is BM25-ranked full text. Implemented in
+`internal/search` (index, query, cache, snippets) plus
+`internal/cli/search.go` (flags and rendering); page metadata comes from the
+same `internal/page` helpers `find` uses (lenient frontmatter, index.md
+summaries, first H1).
+
+The corpus is `vault.Walk()` (`config.dirs` minus `exclude`), one index
+document per page. `--only` (same expansion as `find`, §18.1) is applied at
+query time as a non-scoring filter; the index always covers the whole
+configured corpus, so `--only` never triggers re-indexing and never changes
+scores.
+
+### 19.1 Query syntax
+
+The positional arguments are joined with spaces and parsed as one query
+string:
+
+| Form | Meaning |
+|---|---|
+| `word` | Plain term. Analyzed with every configured analyzer plus the raw analyzer; terms are OR'ed and pages matching more of them rank higher (bleve's coord factor). |
+| `"exact phrase"` | Words in this order, against the unstemmed raw sub-fields. |
+| `term~` | Fuzzy, against the raw sub-fields: edit distance 1 for terms under 6 runes, 2 from 6 runes on. `term~1`/`term~2` pin the distance. |
+| `term*` | Prefix, against the raw sub-fields. |
+| `-term`, `-"phrase"`, `-term~`, `-term*` | Exclude pages matching it (in the searched fields). |
+| `key:value`, `key:"quoted value"` | Exact frontmatter filter on any key (§19.2). `tag:` is an alias for `tags:`. AND'ed with every other filter. |
+| `-key:value` | Exclude pages whose frontmatter has that value. |
+
+A `key:value` token is a filter when `key` starts with a letter or `_` and
+continues with letters, digits, `_`, `-`, `.`; anything else containing a
+colon is an ordinary term. A fuzzy/prefix/phrase stem that the raw analyzer
+splits into several tokens (`po-agent~`) applies to each token, OR'ed.
+Terms with nothing searchable in them (pure punctuation) are dropped.
+
+`--type T` is `--where type=T`. `--where key=value` (repeatable) splits on the
+first `=` only, so values may contain `=` and `/`
+(`--where thread=spaces/AAA/threads/BBB`); every `--where`, `--type` and
+`key:value` is AND'ed. A list-valued key matches when the list contains the
+value. Matching is exact and case-sensitive.
+
+Negated terms are ordinary arguments: `vaulty search delivery -hookdeck`.
+`search` has no shorthand flags, so every argument after `search` that
+starts with a single `-` (other than `-h`) is a query term
+(`normalizeSearchArgs`); a literal `--` turns this off.
+
+A query with filters but no ranked terms (`vaulty search --type decision`,
+`vaulty search status:active`) is valid: every matching page, sorted by
+path, score 0, no snippets.
+
+### 19.2 Fields, analyzers and boosts
+
+Each page is indexed as five text groups plus keyword/stored fields:
+
+| Group | Content | Boost |
+|---|---|---|
+| `name` | slug, frontmatter `title`, every `aliases` entry | 5.0 |
+| `head` | first H1, index summary (§18.3) | 3.0 |
+| `tags` | every `tags` entry, as text | 2.0 |
+| `body` | compiled truth (§5.2: after frontmatter, above the Timeline divider) | 1.0 |
+| `timeline` | from the Timeline divider (or heading) to EOF; searched only with `--timeline` | 1.0 |
+
+Every group is indexed once per `search.analyzers` entry
+(`<group>_<analyzer>`, §4.1) and once with the raw analyzer (`<group>_raw`:
+unicode tokenizer + lowercase, no stop words, no stemming). A plain word
+queries all of them; phrase, fuzzy and prefix queries use only the raw
+sub-fields, because stemming breaks them (`bluestne~1` never reaches an
+`en`-stemmed `blueston`). Term vectors are stored on raw sub-fields only
+(phrases need positions).
+
+Frontmatter is indexed generically: every top-level key whose value is a
+scalar (string, number, bool, date — stringified) or a list of scalars
+becomes one exact term `key=value` per value in the keyword field `fm`
+(`page.FrontmatterValues`); nested maps and non-scalar list elements are
+skipped. Filters are term queries on `fm`. `type`, `title` and the index
+summary are also stored for display, and `type` feeds the type facet.
+
+Scoring is bleve's BM25 (`ScoringModel = "bm25"`; bleve's default is
+TF-IDF). The query is built programmatically, not with bleve's query-string
+parser: each term becomes a disjunction of per-sub-field match/phrase/
+fuzzy/prefix queries carrying the group boost, the terms form the should
+clause of a boolean query, exclusions its must-not clause, and filters plus
+the `--only` document-id set its non-scoring filter. bleve keeps
+Lucene-classic query normalization and coord factors on top of BM25, so raw
+scores are tiny and depend on how many sub-queries a query expanded into;
+`score` is therefore reported relative to the best hit of the query (the top
+hit is `1.00`), in bleve's rank order (score desc, then path asc).
+
+### 19.3 Index cache
+
+Layout, one directory per vault, never inside the vault:
+
+```
+$VAULTY_CACHE_DIR/<sha256(abs vault root)[:16]>/     (default base: os.UserCacheDir()/vaulty)
+  index/           bleve scorch index
+  manifest.json    what the index holds (below)
+  lock             flock target
+```
+
+`manifest.json` records the index format (`search.FormatVersion`), a hash of
+the index mapping (fields, analyzers), a hash of the config that decides what
+is indexed and how pages split (vault root, `dirs`, `exclude`, `find.index`,
+`timeline.heading`, `timeline.divider`, `search.analyzers`), and per page:
+size, mtime (ns), content sha256 and index summary; plus the stats below.
+
+Every call (unless `--no-cache`):
+
+1. Take `lock` (exclusive `flock`, polled every 20 ms for up to **2 s**).
+2. **Full rebuild** when `--rebuild` is given, the manifest is missing or
+   unreadable, or its format version, mapping hash or config hash differs,
+   or the index won't open (corrupt): delete manifest and index, index every
+   page, write the manifest.
+3. Otherwise **incremental**: walk the corpus and stat every file. Same
+   size, mtime and index summary as the manifest: unchanged, no read.
+   Anything else: read and hash. Same hash and summary (a touch): only the
+   manifest entry is refreshed. Different: re-index the page. Manifest pages
+   no longer in the corpus (deleted, excluded, unreadable) are deleted from
+   the index. All changes go in one bleve batch.
+4. Write the manifest atomically (temp file in the cache dir, fsync, rename)
+   only after the index update succeeded — a crash in between leaves the old
+   manifest, and the next call re-applies the same idempotent updates.
+5. Query, release the lock.
+
+Index-format changes bump `FormatVersion` (`internal/search/mapping.go`);
+format 1 is the initial schema.
+
+**Fallback.** When the cache can't be used — no user cache dir, the directory
+can't be created, the lock can't be taken in 2 s, rebuilding or updating
+fails, or the query against the cached index fails (the index is then
+deleted so the next call rebuilds) — the call indexes the corpus in memory
+(the same scorch engine and scoring) and prints exactly one stderr line:
+`vaulty: search cache unavailable (<reason>), indexing in memory`. A cache
+problem never fails the command. `--no-cache` always indexes in memory,
+silently, and never touches the cache (golden tests use it). `--rebuild`
+forces step 2 and keeps using the cache afterwards.
+
+Measured on the real vault (735 pages): full rebuild about 0.8 s; a cached
+call with nothing changed about 10 ms; in-memory about 0.8 s and 135 MB RSS.
+
+**`--stats`** reports on the cached index without locking or updating it
+(the query is ignored), one `key: value` per line (or `--json`):
+`cache` (the vault's cache dir), `pages`, `index_bytes`, `last_update`
+(RFC 3339, last time the index content changed, or `never`),
+`last_check_updated` (pages indexed or deleted by the most recent freshness
+check; the page count after a full rebuild), `last_update_kind` (`full`,
+`incremental`, or `none` when the last check found nothing to do), and
+`full_rebuilds`. With no cached index yet, `pages: 0` and
+`last_update_kind: none (no cached index yet)`.
+
+### 19.4 Output and exit codes
+
+`--limit` (default 10, `0` = unlimited) caps the results; totals and facets
+count every hit.
+
+Human mode, per hit one tab-separated line on stdout, `path\ttype\t
+score\tsummary-or-title` (score with 2 decimals; the index summary when the
+page has one, else the title), then up to 2 snippet lines
+`  L<n>: <text>`. Snippet lines come from the compiled truth (plus the
+Timeline with `--timeline`): the lines matching the most distinct query
+terms, earliest first on ties, printed in line order. `<n>` is the line
+number in the source file. Matches are found with the same analyzers as the
+index (so `leveringen` highlights `levering`) and wrapped in `**`; the
+source's own `**` bold markers are dropped from the line first. A line longer
+than 160 bytes is cut to a window starting up to 40 bytes before its first
+match, with `…` at each cut; the 160 bytes include markup and ellipses, and
+a cut never splits a UTF-8 rune or a `**` pair.
+
+After the results, exactly one stderr line:
+`vaulty: N hits (type counts: decision 4, system 2, (none) 1)`, types by
+count desc then name asc, `(none)` for pages without a type, and
+`type counts: none` when N is 0.
+
+`--json` (no summary line on stderr):
+
+```json
+{"query":"delivery reliability",
+ "total":38,
+ "facets":{"type":{"initiative":4,"(none)":4}},
+ "results":[{"path":"wiki/initiatives/x.md","type":"initiative","title":"X",
+   "summary":"...","score":1,
+   "snippets":[{"line":20,"text":"# DAM asset **delivery** (CDN)"}]}]}
+```
+
+`results` and `snippets` are always arrays; `score` is rounded to 4
+decimals.
+
+| Exit | When |
+|---|---|
+| 0 | Results printed, or no hits (nothing on stdout, `vaulty: 0 hits (type counts: none)` on stderr) |
+| 2 | Empty query (no terms, `key:value`, `--where` or `--type`), unparseable query (unterminated quote, lone `-`, `*`/`~` without a term, `key:` without a value), malformed `--where`, invalid config (including unknown `search.analyzers`) |
+| 4 | The corpus can't be walked, or the in-memory index can't be built |
