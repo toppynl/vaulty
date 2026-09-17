@@ -135,7 +135,7 @@ vaulty [--vault DIR] [--json]
 │   ├── append <op> <title> [--body TEXT] [--date YYYY-MM-DD]
 │   ├── last   [-n|--n N] [--op OP] [--since DATE]
 │   └── lint
-├── find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--json]
+├── find [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--where KEY=VALUE] [--json]
 ├── search <query...> [--only DIR|GLOB] [--type T] [--where KEY=VALUE] [--limit N] [--timeline] [--no-cache] [--rebuild] [--json]
 │   └── --stats [--json]              (cache path, pages, index size, last update)
 ├── config print                     (step 1: effective config + root + config path)
@@ -265,9 +265,11 @@ Choices:
 ### 4.1 Schema and defaults
 
 Every key is optional and absent keys keep their defaults. Slices replace
-the default wholesale; the `severity` map merges. Unknown keys are an error
-(`yaml.Decoder.KnownFields(true)`). The schema is implemented in
-`internal/config/config.go`; `examples/vaulty.yml` documents every key.
+the default wholesale; the `severity`, `search.boosts` and
+`search.field_aliases` maps merge (a partial override only changes the keys
+it names). Unknown keys are an error (`yaml.Decoder.KnownFields(true)`). The
+schema is implemented in `internal/config/config.go`; `examples/vaulty.yml`
+documents every key.
 
 ```yaml
 version: 1
@@ -292,17 +294,80 @@ lint:
   overrides: []            # per-path severity/ratchet exemptions (§6.1a)
 log:
   path: log.md             # `log append|last|lint` target, relative to the root
+fields:                    # shared by find and search (§18, §19)
+  type: type                # frontmatter key holding the page type (--type, facets)
+  title: title               # frontmatter key holding the page title (title-display fallback)
 find:
   index: index.md          # vault-relative path `find` reads index summaries from;
                            # a missing file is skipped silently (§18)
+  fields:                  # scoring sources, in tie-break order (§18.2)
+    - { source: slug,        weight: 100, match: token }  # exact slug match keeps a bonus, §18.2
+    - { source: frontmatter, key: title,   weight: 40, match: token }
+    - { source: frontmatter, key: aliases, weight: 40, match: token }
+    - { source: frontmatter, key: tags,    weight: 25, match: token }
+    - { source: index,       weight: 20, match: token }
+    - { source: h1,          weight: 20, match: token }
+    - { source: body,        weight: 5,  match: token }   # last-resort fallback, `--body` only
 search:
   analyzers: [standard]    # language analyzers text is indexed with (§19.2)
+  boosts:                  # query-time weight per content field group (§19.2)
+    title: 5.0
+    aliases: 5.0
+    slug: 5.0
+    h1: 3.0
+    index: 3.0
+    tags: 2.0
+    body: 1.0
+  field_aliases: { tag: tags }  # query-string `key:value` field name -> frontmatter key (§19.1)
 ```
 
 `find`'s `--only <dir|glob>` flag (repeatable/comma-separated, §18.1) has
 no config key — it's a per-invocation narrowing, not a vault-wide setting,
 and is implemented generically in the `vault` package (`OnlyPatterns`,
 `FilterOnly`), which `search` (§19) uses for the same flag.
+
+`fields.type`/`fields.title` name the frontmatter keys `find` and `search`
+read a page's type and title from — the only two frontmatter keys either
+command treats as "well-known" across both of them (`--type` filtering, the
+type facet, the title-display fallback). Every other frontmatter key either
+command cares about (aliases, tags, an id, or any vault-specific key) is
+named directly, per field, via `find.fields`/`search.boosts` below rather
+than through a shared renaming layer like this one. A config error
+(missing/empty) exits 2.
+
+`find.fields` (DESIGN.md §18.2) replaces the built-in weight table wholesale
+when given — a vault that lists its own `find.fields` opts fully out of the
+defaults shown above, rather than appending to them. Each entry: `source` is
+`slug`, `frontmatter` (`key` required, read generically via
+`page.FrontmatterValues` — a scalar or list of scalars, stringified; nested
+maps and non-scalar list elements skipped), `index` (the index.md summary),
+`h1` or `body` (the compiled-truth text, matched only as a last-resort
+fallback for a term no other field matched, and only with `find --body` —
+regardless of this field's weight). `weight` must be `> 0`. `match` is
+`token` (tokenize both term and value, §18.1's contiguous-prefix-window
+rule) or `exact` (the whole normalized value must equal the whole
+normalized term, no tokenizing — for values like ids containing `/` that
+tokenizing would otherwise split on; normalizes by trimming and
+case-folding only). For one term, the single field with the highest weight
+that matches counts; a weight tie breaks toward the earlier entry in this
+list. `source: slug` keeps an exact-match bonus as a fixed property of that
+source, not a separately configurable knob: a full token-sequence match
+scores `weight`, a mere substring/prefix-window match scores `weight/2` —
+the built-in 100/50 default. Every other source scores the full `weight` on
+any match. A config error (unknown `source`, missing `key` for
+`frontmatter`, non-positive `weight`, or an unrecognized `match`) exits 2.
+
+`search.boosts` weights each of the seven content field groups at query
+time (§19.2); a higher boost ranks a match in that field higher. It is a
+query-time weight only — it never changes what gets indexed, so changing it
+alone never forces a cache rebuild (§19.3). The Timeline group (searched
+only with `--timeline`) is not in this map: its boost is fixed at `1.0`,
+since it's off by default. `search.field_aliases` maps a query-string field
+name (the `key:value` syntax, §19.1) onto the frontmatter key it actually
+filters; the default `tag: tags` lets `search tag:billing` filter on the
+`tags` frontmatter key. Both maps merge onto the default like
+`lint.severity` above. A config error (an unknown `search.boosts` key, a
+non-positive boost, or an empty `search.field_aliases` key/value) exits 2.
 
 `search.analyzers` lists the analyzers every text field is indexed with, one
 sub-field each. The default `[standard]` is language-neutral (unicode words,
@@ -1999,7 +2064,7 @@ opposite: surface every finding as the primary result, for a periodic
 vault-health pass (alongside `timeline lint`) rather than every `log
 last` call.
 
-## 18. `vaulty find <term> [<term>...]`
+## 18. `vaulty find [<term>...]`
 
 Replaces raw `grep -r`/`find` as the LLM reader agent's discovery step over
 the vault: term(s) in, ranked vault-relative page paths out, ready to pass
@@ -2042,25 +2107,43 @@ matching over a separator-collapsed string got wrong.
 
 ### 18.2 Fields, weights and per-term scoring
 
-One named table (`internal/find/find.go`, the `weight*` constants):
+Scoring sources are `find.fields` (§4.1), a config-driven list — the
+built-in defaults reproduce what used to be a fixed table:
 
-| Field | Exact | Substring |
+| Field | Weight | Match |
 |---|---|---|
-| slug (basename without `.md`) | 100 | 50 |
-| frontmatter `title` | 40 | 30 |
-| any frontmatter `aliases` entry | 40 | 30 |
-| frontmatter `tags` entry | 25 | 25 |
-| index summary (§18.3) | 20 | 20 |
-| first H1 heading text | 20 | 20 |
-| compiled-truth body line (`--body` only, §18.4) | 5 | 5 |
+| slug (basename without `.md`) | 100 (50 on a mere substring) | token |
+| frontmatter `title` | 40 | token |
+| any frontmatter `aliases` entry | 40 | token |
+| frontmatter `tags` entry | 25 | token |
+| index summary (§18.3) | 20 | token |
+| first H1 heading text | 20 | token |
+| compiled-truth body line (`--body` only, §18.4) | 5 | token |
 
 Terms are OR'ed. For each term independently, the page's *single*
-best-matching field counts (the highest weight; ties break in the table's
-row order above — e.g. an exact `title` and an exact `alias` both score
-40, and `title` wins the tie only for the purpose of which field name is
-reported, not the score). The page's total score is the sum of each
-term's best-field weight (0 for a term that matches nothing). A page with
-a total score of 0 (no term matched anything) is not a result at all.
+best-matching field counts (the highest weight; ties break toward the
+earlier entry in `find.fields` — e.g. an exact `title` and an exact `alias`
+both score 40 by default, and `title` wins the tie only for the purpose of
+which field name is reported, not the score). The page's total score is the
+sum of each term's best-field weight (0 for a term that matches nothing). A
+page with a total score of 0 (no term matched anything, and no `--where`/
+`--type` filter given either) is not a result at all.
+
+A `find.fields` entry's `source` names where its value(s) come from (`slug`,
+`frontmatter` with `key`, `index`, `h1` or `body`); `match: token` runs the
+tokenized matching described above, `match: exact` instead compares the
+whole normalized value to the whole normalized term with no tokenizing at
+all (trim + case-fold only) — for a value like an id containing `/` that
+tokenizing would otherwise split apart. `source: slug` is the one field
+that keeps an exact-match bonus as a fixed property of that source (not a
+separately configurable knob): a full token-sequence match scores its
+configured weight, a mere substring/prefix-window match scores half that —
+the built-in 100/50 shown above. Every other source scores the full
+configured weight on any match, exact or not. A vault that sets its own
+`find.fields` replaces the table above wholesale (§4.1); a vault-defined
+`frontmatter` key not among `title`/`aliases`/`tags` reports its own key
+name as the matched field (e.g. `id`), rather than one of the built-in
+labels (`title`/`alias`/`tag`).
 
 Body is deliberately checked last and only as a fallback: a term already
 satisfied by a higher-weight field never triggers a body scan for that
@@ -2074,6 +2157,20 @@ snippet, since body never had to run for that term.
 `type` comes from frontmatter only; a page with no frontmatter, or
 frontmatter that fails to parse, has `type == ""` and is excluded by any
 `--type` filter (but still eligible for every other flag combination).
+
+`--where KEY=VALUE` (repeatable) is the same exact, case-sensitive,
+AND'ed frontmatter filter as `search --where` (§19.1), splitting on the
+first `=` only: a list-valued key matches when the list contains the
+value. It is shared with `search` via the `internal/filter` package (both
+the `KEY=VALUE` parser and the match function), so the two commands parse
+and match identically; `find --where` never applies the `tag:`→`tags`
+alias — that's a `search`-only query-string convenience (§19.1), not part
+of `--where` on either command. `--where` combines with `--type` and
+`--only` (AND'ed with both). Unlike a bare `find` invocation, `find` with
+at least one `--where` or `--type` is valid with **no terms at all**: every
+page matching the filter(s) is a result, sorted by path ascending, score 0
+(§18.5). With no terms and no `--where`/`--type` either, it's still the
+usual usage error (`vaulty: find: no search terms given`, exit 2).
 
 ### 18.3 Frontmatter and the index
 
@@ -2127,9 +2224,11 @@ the index summary when the page has one, else the frontmatter title, else
 empty. With `--body`, each result is followed by one indented line per
 recorded body match: `  L<n>: <snippet>`.
 
-No terms given, or every term blank after normalization, exits 2
-(`vaulty: find: no search terms given`) — a caller mistake, not "found
-nothing". No pages match (valid terms, zero results): nothing on stdout,
+No terms given (or every term blank after normalization) and no `--where`/
+`--type` given either exits 2 (`vaulty: find: no search terms given`) — a
+caller mistake, not "found nothing". With `--where`/`--type` and no terms,
+every page is scored 0 and sorted by path instead (§18.1's `--where`
+paragraph). No pages match (valid terms, zero results): nothing on stdout,
 `vaulty: no pages match` on stderr, **exit 0** — this is a normal, useful
 answer for a discovery tool, not a usage error.
 
@@ -2181,7 +2280,7 @@ string:
 | `term~` | Fuzzy, against the raw sub-fields: edit distance 1 for terms under 6 runes, 2 from 6 runes on. `term~1`/`term~2` pin the distance; any other `~N` is a query error. |
 | `term*` | Prefix, against the raw sub-fields. |
 | `-term`, `-"phrase"`, `-term~`, `-term*` | Exclude pages matching it (in the searched fields). |
-| `key:value`, `key:"quoted value"` | Exact frontmatter filter on any key (§19.2). `tag:` is an alias for `tags:`. AND'ed with every other filter. |
+| `key:value`, `key:"quoted value"` | Exact frontmatter filter on any key (§19.2). `tag:` is an alias for `tags:` (`search.field_aliases`, §4.1). AND'ed with every other filter. |
 | `-key:value` | Exclude pages whose frontmatter has that value. |
 
 A `key:value` token is a filter when `key` starts with a letter or `_` and
@@ -2196,7 +2295,10 @@ query whose terms all drop out (`vaulty search '!!!'`) is a query error
 first `=` only, so values may contain `=` and `/`
 (`--where thread=spaces/AAA/threads/BBB`); every `--where`, `--type` and
 `key:value` is AND'ed. A list-valued key matches when the list contains the
-value. Matching is exact and case-sensitive.
+value. Matching is exact and case-sensitive. The `key=value` parser and the
+match function are shared with `find --where` (§18) via the
+`internal/filter` package; `search`'s own `--where` never applies
+`search.field_aliases` (only the `key:value` syntax below does).
 
 Negated terms are ordinary arguments: `vaulty search delivery -hookdeck`.
 `search` has no shorthand flags, so every argument after `search` that
@@ -2209,17 +2311,28 @@ path, score 0, no snippets.
 
 ### 19.2 Fields, analyzers and boosts
 
-Each page is indexed as five text groups plus keyword/stored fields:
+Each page is indexed as eight text groups plus keyword/stored fields. Seven
+are content groups, each its own field so it can carry its own
+configurable boost (`search.boosts`, §4.1); the eighth, `timeline`, is
+searched only with `--timeline` and its boost is fixed, not
+config-driven:
 
-| Group | Content | Boost |
+| Group | Content | Boost (default) |
 |---|---|---|
-| `name` | slug, frontmatter `title`, every `aliases` entry | 5.0 |
-| `head` | first H1, index summary (§18.3) | 3.0 |
+| `title` | frontmatter `title` | 5.0 |
+| `aliases` | every `aliases` entry | 5.0 |
+| `slug` | slug (basename without `.md`) | 5.0 |
+| `h1` | first H1 heading text | 3.0 |
+| `index` | index summary (§18.3) | 3.0 |
 | `tags` | every `tags` entry, as text | 2.0 |
 | `body` | compiled truth (§5.2: after frontmatter, above the Timeline divider) | 1.0 |
-| `timeline` | from the Timeline divider (or heading) to EOF; searched only with `--timeline` | 1.0 |
+| `timeline` | from the Timeline divider (or heading) to EOF; searched only with `--timeline` | 1.0 (fixed, not in `search.boosts`) |
 
-Every group is indexed once per `search.analyzers` entry
+`search.boosts` (§4.1) is a query-time weight only, applied when building
+the query (`SetBoost`); it never changes what gets indexed, so changing it
+alone never forces a cache rebuild (§19.3) — only a change to which groups
+exist or how they're analyzed does (a mapping-schema change, §19.3). Every
+group is indexed once per `search.analyzers` entry
 (`<group>_<analyzer>`, §4.1) and once with the raw analyzer (`<group>_raw`:
 unicode tokenizer + lowercase, no stop words, no stemming). A plain word
 queries all of them; phrase, fuzzy and prefix queries use only the raw
@@ -2256,11 +2369,15 @@ $VAULTY_CACHE_DIR/<sha256(abs vault root)[:16]>/     (default base: os.UserCache
   lock             flock target
 ```
 
-`manifest.json` records the index format (`search.FormatVersion`), a hash of
-the index mapping (fields, analyzers), a hash of the config that decides what
-is indexed and how pages split (vault root, `dirs`, `exclude`, `find.index`,
-`timeline.heading`, `timeline.divider`, `search.analyzers`), and per page:
-size, mtime (ns), content sha256 and index summary; plus the stats below.
+`manifest.json` records the index format (`search.FormatVersion`; 2 since
+the boosts/fields follow-up split the `name`/`head` groups into their own
+per-field groups, §19.2), a hash of the index mapping (fields, analyzers),
+a hash of the config that decides what is indexed and how pages split
+(vault root, `dirs`, `exclude`, `find.index`, `timeline.heading`,
+`timeline.divider`, `search.analyzers`, `fields.type`, `fields.title`), and
+per page: size, mtime (ns), content sha256 and index summary; plus the
+stats below. `search.boosts`/`search.field_aliases` are query-time only
+and never part of this hash (they don't change what gets indexed).
 
 Every call (unless `--no-cache`):
 

@@ -46,7 +46,11 @@ import (
 // index is rebuilt instead of being queried with the wrong shape.
 //
 //	1: initial search index (name/head/tags/body/timeline groups, fm key=value)
-const FormatVersion = 1
+//	2: split the name/head groups into their own per-field groups (slug,
+//	   title, aliases, h1, index) so each can carry its own configurable
+//	   boost (config.Search.Boosts, DESIGN.md §19.2) instead of one boost
+//	   shared by every field bundled into "name"/"head".
+const FormatVersion = 2
 
 // rawAnalyzer is the unstemmed analyzer every group also gets: unicode word
 // tokenizer + lowercase, no stop words, no stemming. Fuzzy, prefix and
@@ -54,37 +58,54 @@ const FormatVersion = 1
 const rawAnalyzer = "vaulty_raw"
 
 // Field groups. Each group is indexed once per configured analyzer
-// ("<group>_<analyzer>") plus once raw ("<group>_raw").
+// ("<group>_<analyzer>") plus once raw ("<group>_raw"). These seven content
+// groups are exactly config.SearchFieldGroups, the valid keys for
+// config.Search.Boosts (DESIGN.md §19.2); groupTimeline is an eighth group,
+// searched only with --timeline, whose boost is fixed (never user-
+// configurable — see timelineBoost).
 const (
-	groupName     = "name"     // slug, title, aliases
-	groupHead     = "head"     // first H1, index summary
+	groupTitle    = "title"
+	groupAliases  = "aliases"
+	groupSlug     = "slug"
+	groupH1       = "h1"
+	groupIndex    = "index"
 	groupTags     = "tags"     // tags (as text)
 	groupBody     = "body"     // compiled truth
 	groupTimeline = "timeline" // everything from the Timeline divider on
 )
 
-// Field boosts (DESIGN.md §19.2).
-var groupBoost = map[string]float64{
-	groupName:     5.0,
-	groupHead:     3.0,
-	groupTags:     2.0,
-	groupBody:     1.0,
-	groupTimeline: 1.0,
-}
+// timelineBoost is groupTimeline's fixed, non-configurable boost (DESIGN.md
+// §19.2): it is off by default (searched only with --timeline) and not one
+// of the seven fields config.Search.Boosts covers.
+const timelineBoost = 1.0
 
 // allGroups is the indexing order; contentGroups are searched by default
 // (groupTimeline only with --timeline).
 var (
-	allGroups     = []string{groupName, groupHead, groupTags, groupBody, groupTimeline}
-	contentGroups = []string{groupName, groupHead, groupTags, groupBody}
+	contentGroups = []string{groupTitle, groupAliases, groupSlug, groupH1, groupIndex, groupTags, groupBody}
+	allGroups     = append(append([]string{}, contentGroups...), groupTimeline)
 )
 
-// Stored/keyword fields.
+// boostsWithTimeline copies cfg (config.Search.Boosts) and adds the fixed
+// Timeline boost, for clauseQuery's lookup (query.go).
+func boostsWithTimeline(cfg map[string]float64) map[string]float64 {
+	out := make(map[string]float64, len(cfg)+1)
+	for k, v := range cfg {
+		out[k] = v
+	}
+	out[groupTimeline] = timelineBoost
+	return out
+}
+
+// Stored/keyword fields. fieldTitleStored/fieldSummaryStored are
+// stored-only display copies, distinct from the indexed/boosted groupTitle
+// text group (both happen to be about "title", but one is searched text,
+// the other a display-only stored value bleve returns verbatim).
 const (
-	fieldType    = "type"    // keyword, stored, doc values (facets)
-	fieldTitle   = "title"   // stored only (display)
-	fieldSummary = "summary" // stored only (display)
-	fieldFM      = "fm"      // keyword terms "key=value", one per frontmatter value
+	fieldType          = "type"           // keyword, stored, doc values (facets)
+	fieldTitleStored   = "title_stored"   // stored only (display)
+	fieldSummaryStored = "summary_stored" // stored only (display)
+	fieldFM            = "fm"             // keyword terms "key=value", one per frontmatter value
 )
 
 func groupField(group, analyzer string) string {
@@ -129,7 +150,7 @@ func newMapping(analyzers []string) (*mapping.IndexMappingImpl, error) {
 	typ.IncludeTermVectors = false
 	dm.AddFieldMappingsAt(fieldType, typ)
 
-	for _, f := range []string{fieldTitle, fieldSummary} {
+	for _, f := range []string{fieldTitleStored, fieldSummaryStored} {
 		fm := bleve.NewTextFieldMapping()
 		fm.Index = false
 		fm.Store = true

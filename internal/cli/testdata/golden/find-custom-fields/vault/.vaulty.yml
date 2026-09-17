@@ -1,0 +1,6 @@
+version: 1
+find:
+  fields:
+    - { source: slug, weight: 100, match: token }
+    - { source: frontmatter, key: id, weight: 60, match: exact }
+    - { source: frontmatter, key: title, weight: 40, match: token }

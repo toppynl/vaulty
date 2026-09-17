@@ -10,6 +10,8 @@ import (
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/analysis"
 	"github.com/blevesearch/bleve/v2/search/query"
+
+	"github.com/toppynl/vaulty/internal/filter"
 )
 
 // ErrQuery marks a query string that cannot be parsed (exit 2).
@@ -38,11 +40,9 @@ type Clause struct {
 }
 
 // Filter is an exact frontmatter match: the page's frontmatter key Key has
-// Value (list keys: contains Value).
-type Filter struct {
-	Key   string
-	Value string
-}
+// Value (list keys: contains Value). Shared with `find --where`
+// (internal/filter).
+type Filter = filter.Filter
 
 // Query is a parsed query string.
 type Query struct {
@@ -63,24 +63,20 @@ var fuzzyDistRe = regexp.MustCompile(`~(\d*)$`)
 // digits, "_", "-", ".".
 var filterKeyRe = regexp.MustCompile(`^[\p{L}_][\p{L}\p{N}_.-]*$`)
 
-// filterAliases maps query-string field names onto frontmatter keys.
-var filterAliases = map[string]string{"tag": "tags"}
-
 // ParseFilter parses a --where "key=value" argument, splitting on the first
-// "=" only (values may contain "=" and "/").
+// "=" only (values may contain "=" and "/"). Shared with `find --where`
+// (internal/filter); search's own --where never applies FieldAliases (only
+// the query-string `key:value` syntax below does).
 func ParseFilter(s string) (Filter, error) {
-	k, v, ok := strings.Cut(s, "=")
-	k = strings.TrimSpace(k)
-	if !ok || k == "" || v == "" {
-		return Filter{}, fmt.Errorf("--where %q: want key=value", s)
-	}
-	return Filter{Key: k, Value: v}, nil
+	return filter.Parse(s)
 }
 
-// ParseQuery parses the query language (DESIGN.md §19.1). A query that is
-// empty after parsing is not an error here; the caller decides (a
-// filter-only search is valid).
-func ParseQuery(raw string) (*Query, error) {
+// ParseQuery parses the query language (DESIGN.md §19.1). aliases maps a
+// query-string field name (`key:value`) onto the frontmatter key it
+// actually filters (config.Search.FieldAliases; default `tag: tags`). A
+// query that is empty after parsing is not an error here; the caller
+// decides (a filter-only search is valid).
+func ParseQuery(raw string, aliases map[string]string) (*Query, error) {
 	q := &Query{Raw: raw}
 	s := raw
 	i := 0
@@ -144,7 +140,7 @@ func ParseQuery(raw string) (*Query, error) {
 			if v == "" {
 				return nil, fmt.Errorf("%w: %q has no value", ErrQuery, tok)
 			}
-			if a, ok := filterAliases[k]; ok {
+			if a, ok := aliases[k]; ok {
 				k = a
 			}
 			f := Filter{Key: k, Value: v}
@@ -242,11 +238,13 @@ func (q *Query) resolve(raw analysis.Analyzer) error {
 }
 
 // clauseQuery builds one clause as a disjunction over every searched field.
-func clauseQuery(c Clause, groups, analyzers []string, boosted bool) query.Query {
+// boosts is config.Search.Boosts plus the fixed Timeline boost (§19.2);
+// missing keys score 0.
+func clauseQuery(c Clause, groups, analyzers []string, boosted bool, boosts map[string]float64) query.Query {
 	var subs []query.Query
 	boost := func(g string) float64 {
 		if boosted {
-			return groupBoost[g]
+			return boosts[g]
 		}
 		return 1
 	}
@@ -300,13 +298,13 @@ func filterQuery(f Filter) query.Query {
 // (MustNot), and filters plus the --only doc-id set as a non-scoring
 // boolean Filter, so narrowing never changes a page's score. A query with
 // no ranked clauses matches everything its filters/negations allow.
-func (q *Query) build(groups, analyzers []string, onlyIDs []string, onlyActive bool, extra []Filter) query.Query {
+func (q *Query) build(groups, analyzers []string, onlyIDs []string, onlyActive bool, extra []Filter, boosts map[string]float64) query.Query {
 	bq := query.NewBooleanQuery(nil, nil, nil)
 	for _, c := range q.Clauses {
-		bq.AddShould(clauseQuery(c, groups, analyzers, true))
+		bq.AddShould(clauseQuery(c, groups, analyzers, true, boosts))
 	}
 	for _, c := range q.Negated {
-		bq.AddMustNot(clauseQuery(c, groups, analyzers, false))
+		bq.AddMustNot(clauseQuery(c, groups, analyzers, false, boosts))
 	}
 	for _, f := range q.NotFilters {
 		bq.AddMustNot(filterQuery(f))

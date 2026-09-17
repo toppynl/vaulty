@@ -166,19 +166,24 @@ vaulty log lint    # malformed headings fail the exit code; out-of-order dates a
 ### `find`
 
 ```bash
-vaulty find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--json]
+vaulty find [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--where KEY=VALUE] [--json]
 ```
 
 Ranks vault pages by term match over slug, frontmatter `title`/`aliases`/
 `tags`, the `index.md` summary and the first H1 — a faster, ranked
-replacement for `grep -r`/`find` as a discovery step. `--body` also
-matches compiled-truth text as a lowest-weight fallback. `--only` (
-repeatable or comma-separated) restricts to a directory (`--only wiki`) or
-a glob (`--only "wiki/*.md"`).
+replacement for `grep -r`/`find` as a discovery step (the fields and their
+weights are configurable, `find.fields` in [Configuration](#configuration)).
+`--body` also matches compiled-truth text as a lowest-weight fallback.
+`--only` (repeatable or comma-separated) restricts to a directory
+(`--only wiki`) or a glob (`--only "wiki/*.md"`). `--where key=value`
+(repeatable, exact/case-sensitive, AND'ed — same as `search --where` below)
+filters on any frontmatter key; combined with `--type`/`--only` and no
+terms at all, it lists every matching page sorted by path.
 
 ```bash
 vaulty find billing
 vaulty find acme pay --type system
+vaulty find --where status=active
 ```
 
 ### `search`
@@ -201,7 +206,7 @@ Query syntax:
 | `term~` / `term~1` / `term~2` | Fuzzy match (edit distance auto-picked, or pinned to 1/2). |
 | `term*` | Prefix match. |
 | `-term`, `-"phrase"`, `-term~`, `-term*` | Exclude pages matching it. |
-| `key:value`, `key:"quoted value"` | Exact frontmatter filter on any key (`tag:` is an alias for `tags:`). |
+| `key:value`, `key:"quoted value"` | Exact frontmatter filter on any key (`tag:` is an alias for `tags:`, configurable via `search.field_aliases`). |
 | `-key:value` | Exclude pages with that frontmatter value. |
 
 `--type T` is shorthand for `--where type=T`; `--where key=value`
@@ -231,6 +236,9 @@ Every text field is indexed once per `search.analyzers` entry (default
 `[standard]`, language-neutral) plus once with a raw, unstemmed analyzer
 used for phrase/fuzzy/prefix queries. A vault in a stemmed language (e.g.
 Dutch) lists it in `.vaulty.yml` for better recall on plain-word queries.
+Each of the seven content fields (`title`, `aliases`, `slug`, `h1`, `index`,
+`tags`, `body`) carries its own query-time boost, configurable via
+`search.boosts` in [Configuration](#configuration).
 
 ### `config print`
 
@@ -283,12 +291,45 @@ lint:
 log:
   path: log.md                   # `log append|last|lint` target, relative to the root
 
+fields:                          # shared by find and search
+  type: type                     # frontmatter key holding the page type (--type, facets)
+  title: title                   # frontmatter key holding the page title (title-display fallback)
+
 find:
   index: index.md                # vault-relative path `find` reads index summaries from
+  fields:                        # scoring sources, in tie-break order; replaces this list wholesale
+    - { source: slug,        weight: 100, match: token }  # exact slug match keeps a bonus
+    - { source: frontmatter, key: title,   weight: 40, match: token }
+    - { source: frontmatter, key: aliases, weight: 40, match: token }
+    - { source: frontmatter, key: tags,    weight: 25, match: token }
+    - { source: index,       weight: 20, match: token }
+    - { source: h1,          weight: 20, match: token }
+    - { source: body,        weight: 5,  match: token }   # --body only, last-resort fallback
 
 search:
   analyzers: [standard]          # text analyzers, one sub-field each; standard = language-neutral.
                                   # A stemmed-language vault lists codes instead, e.g. [nl, en].
+  boosts:                        # query-time weight per content field; merges onto these defaults
+    title: 5.0
+    aliases: 5.0
+    slug: 5.0
+    h1: 3.0
+    index: 3.0
+    tags: 2.0
+    body: 1.0
+  field_aliases: { tag: tags }   # query-string `key:value` field name -> frontmatter key; merges too
+```
+
+A vault-defined `find.fields` can add its own frontmatter fields — e.g. an
+`id` field, matched whole (no tokenizing) so an id containing `/` still
+matches exactly:
+
+```yaml
+find:
+  fields:
+    - { source: slug, weight: 100, match: token }
+    - { source: frontmatter, key: id, weight: 60, match: exact }
+    - { source: frontmatter, key: title, weight: 40, match: token }
 ```
 
 An annotated copy ships at [`examples/vaulty.yml`](examples/vaulty.yml).

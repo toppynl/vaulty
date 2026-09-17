@@ -13,37 +13,25 @@ import (
 
 	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/doc"
+	"github.com/toppynl/vaulty/internal/filter"
 	"github.com/toppynl/vaulty/internal/page"
 	"github.com/toppynl/vaulty/internal/timeline"
 	"github.com/toppynl/vaulty/internal/vault"
 )
 
-// ErrNoTerms is returned when every given term is blank (exit 2, DESIGN.md §18.2).
+// ErrNoTerms is returned when every given term is blank and no --where/--type
+// filter was given either (exit 2, DESIGN.md §18.2): with a filter present,
+// find is valid with no terms at all (item 3 of the fields/where follow-up
+// — same as `search`, DESIGN.md §19.1's filter-only query).
 var ErrNoTerms = errors.New("no search terms given")
-
-// weights is the single named table of field weights (DESIGN.md §18.1).
-// exact/sub apply to fields with an exact-vs-substring distinction (slug,
-// title, alias); the rest (tag, index, h1, body) have one weight, applied
-// on a substring (Contains) match only.
-const (
-	weightSlugExact  = 100
-	weightSlugSub    = 50
-	weightTitleExact = 40
-	weightTitleSub   = 30
-	weightAliasExact = 40
-	weightAliasSub   = 30
-	weightTag        = 25
-	weightIndex      = 20
-	weightH1         = 20
-	weightBody       = 5
-)
 
 // Options are the `find` flags that affect scoring/scope, beyond the terms
 // themselves.
 type Options struct {
-	Body bool     // scan compiled-truth body text as a fallback field
-	Only []string // raw --only tokens (dir names or globs); empty = whole vault
-	Type string   // filter on frontmatter `type` (exact match); "" = no filter
+	Body  bool            // scan compiled-truth body text as a fallback field
+	Only  []string        // raw --only tokens (dir names or globs); empty = whole vault
+	Type  string          // filter on frontmatter `type` (exact match); "" = no filter
+	Where []filter.Filter // --where key=value, AND'ed, exact/case-sensitive (list-contains)
 }
 
 // BodyMatch is one compiled-truth line a body-fallback term matched.
@@ -75,8 +63,8 @@ func (r Result) SummaryOrTitle() string {
 // NormalizeTerms tokenizes each term (see tokenize) and rejoins it with
 // single spaces, dropping any term with no tokens at all (e.g. blank, or
 // pure punctuation). Exported so the CLI layer can validate "no terms"
-// (ErrNoTerms) before calling Search, and so JSON output can echo back
-// what was actually matched against.
+// (together with a filter check, ErrNoTerms) before calling Search, and so
+// JSON output can echo back what was actually matched against.
 func NormalizeTerms(raw []string) []string {
 	var out []string
 	for _, t := range raw {
@@ -89,16 +77,49 @@ func NormalizeTerms(raw []string) []string {
 	return out
 }
 
+// termInfo is one query term in both forms a config.FindField.Match mode
+// needs: tokenized (match: token, DESIGN.md §18.1's prefix-window rule) and
+// raw/trimmed, case-folded (match: exact, a whole-value equality check that
+// never tokenizes — so punctuation like "/" in an id survives).
+type termInfo struct {
+	tokens []string
+	rawLC  string // trimmed, lowercased
+}
+
+// buildTerms computes termInfo for every rawTerm with at least one token,
+// in the same order NormalizeTerms would keep them (dropping the same
+// blanks), so the two stay in step for validation/JSON display vs. actual
+// matching.
+func buildTerms(rawTerms []string) []termInfo {
+	var out []termInfo
+	for _, t := range rawTerms {
+		toks := tokenize(t)
+		if len(toks) == 0 {
+			continue
+		}
+		out = append(out, termInfo{tokens: toks, rawLC: strings.ToLower(strings.TrimSpace(t))})
+	}
+	return out
+}
+
 // Search scores every page vault.Walk() returns — the whole vault (minus
 // the global config.Exclude, already applied by Walk) by default; opts.Only
 // narrows that further via vault.OnlyPatterns/FilterOnly (DESIGN.md §18) —
-// against terms (OR'ed; already normalized via NormalizeTerms), sorts by
-// score desc then path asc, and returns every match (the caller applies
-// --limit). total is len(results) before any limiting, i.e. always
-// len(results) here — the CLI slices afterwards so it can report the
-// pre-limit count.
-func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
-	if len(terms) == 0 {
+// against rawTerms (OR'ed), sorts by score desc then path asc, and returns
+// every match (the caller applies --limit). rawTerms are the caller's
+// original arguments (not pre-tokenized): Search tokenizes them itself, and
+// separately keeps each term's raw, case-folded text for match: "exact"
+// fields (config.FindField), which must never be split on punctuation like
+// tokenizing would do.
+//
+// With no terms at all (every rawTerm blank), Search requires at least one
+// of opts.Type/opts.Where — a filter-only call, mirroring `search`'s
+// filter-only query (DESIGN.md §19.1) — and returns every matching page
+// sorted by path, score 0. With no terms and no filter, it's the caller's
+// mistake (ErrNoTerms).
+func Search(v *vault.Vault, rawTerms []string, opts Options) ([]Result, error) {
+	terms := buildTerms(rawTerms)
+	if len(terms) == 0 && opts.Type == "" && len(opts.Where) == 0 {
 		return nil, ErrNoTerms
 	}
 
@@ -113,11 +134,7 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 		return nil, err
 	}
 	index := page.LoadIndex(idx)
-
-	termToks := make([][]string, len(terms))
-	for i, t := range terms {
-		termToks[i] = tokenize(t)
-	}
+	fields := v.Config.Find.Fields
 
 	var results []Result
 	for _, rel := range files {
@@ -129,14 +146,25 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 		if err != nil {
 			continue // best effort: an unreadable file just doesn't match
 		}
-		pi := newPageInfo(rel, src, v.Config.Timeline)
+		pi := newPageInfo(rel, src, v.Config)
 		pi.setIndexSummary(index[pi.slug])
 
 		if opts.Type != "" && pi.fmType != opts.Type {
 			continue
 		}
+		if !filter.MatchAll(pi.fmValues, opts.Where) {
+			continue
+		}
 
-		score, matched, body := scorePage(pi, termToks, opts)
+		if len(terms) == 0 {
+			// Filter-only: every match counts, score 0 (sorted by path below).
+			results = append(results, Result{
+				Path: rel, Type: pi.fmType, Title: pi.title, Summary: pi.indexSummary, Matched: []string{},
+			})
+			continue
+		}
+
+		score, matched, body := scorePage(pi, terms, fields, opts)
 		if score == 0 {
 			continue
 		}
@@ -163,21 +191,14 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 // ---- per-page metadata -----------------------------------------------
 
 type pageInfo struct {
-	rel                string
-	slug               string // basename without .md, as written (index lookup key)
-	slugTokens         []string
-	fmType             string
-	title              string
-	titleTokens        []string
-	aliasesTokens      [][]string
-	tagsTokens         [][]string
-	h1                 string
-	h1Tokens           []string
-	indexSummary       string
-	indexSummaryTokens []string
+	slug         string // basename without .md, as written (index lookup key)
+	fmType       string
+	title        string
+	fmValues     map[string][]string // generic frontmatter (page.FrontmatterValues); backs source: frontmatter and --where
+	h1           string
+	indexSummary string
 
 	// body support (lazy: only computed when needed)
-	src     []byte
 	tlCfg   config.Timeline
 	doc     *doc.Doc
 	bodyLns []bodyLine
@@ -189,36 +210,24 @@ type bodyLine struct {
 	text string
 }
 
-func newPageInfo(rel string, src []byte, tlCfg config.Timeline) *pageInfo {
+func newPageInfo(rel string, src []byte, cfg *config.Config) *pageInfo {
 	slug := strings.TrimSuffix(path.Base(rel), ".md")
-	pi := &pageInfo{rel: rel, slug: slug, slugTokens: tokenize(slug), src: src, tlCfg: tlCfg}
+	pi := &pageInfo{slug: slug, tlCfg: cfg.Timeline}
 	pi.doc = doc.Parse(rel, src)
 
-	fm := page.ParseFrontmatter(pi.doc)
+	fm := page.ParseFrontmatter(pi.doc, cfg.Fields)
 	pi.fmType = fm.Type
 	pi.title = fm.Title
-	pi.titleTokens = tokenize(fm.Title)
-	for _, a := range fm.Aliases {
-		if toks := tokenize(a); len(toks) > 0 {
-			pi.aliasesTokens = append(pi.aliasesTokens, toks)
-		}
-	}
-	for _, t := range fm.Tags {
-		if toks := tokenize(t); len(toks) > 0 {
-			pi.tagsTokens = append(pi.tagsTokens, toks)
-		}
-	}
+	pi.fmValues = fm.Values
 
 	pi.h1 = page.FirstH1(pi.doc)
-	pi.h1Tokens = tokenize(pi.h1)
 	return pi
 }
 
 // setIndexSummary records the page's index.md summary (raw, for Result
-// output, and tokenized, for matching).
+// output, and matching).
 func (pi *pageInfo) setIndexSummary(s string) {
 	pi.indexSummary = s
-	pi.indexSummaryTokens = tokenize(s)
 }
 
 // compiledTruthLines lazily splits the page's compiled-truth span
@@ -245,6 +254,51 @@ func (pi *pageInfo) compiledTruthLines() []bodyLine {
 		pi.bodyLns = append(pi.bodyLns, bodyLine{num: n, text: text})
 	}
 	return pi.bodyLns
+}
+
+// values returns f's raw candidate value(s) on pi, or nil if f has none
+// (e.g. an empty index summary, or a frontmatter key the page doesn't set).
+func (pi *pageInfo) values(f config.FindField) []string {
+	switch f.Source {
+	case "slug":
+		return []string{pi.slug}
+	case "frontmatter":
+		return pi.fmValues[f.Key]
+	case "index":
+		if pi.indexSummary == "" {
+			return nil
+		}
+		return []string{pi.indexSummary}
+	case "h1":
+		if pi.h1 == "" {
+			return nil
+		}
+		return []string{pi.h1}
+	}
+	return nil
+}
+
+// label is the "matched" field name reported for f (DESIGN.md §18.5),
+// keeping the built-in names find has always used (singular "alias"/"tag"
+// for the plural frontmatter keys) so a vault on the default config sees
+// byte-identical output; a vault-defined frontmatter key not among these
+// reports its own key name.
+func label(f config.FindField) string {
+	switch f.Source {
+	case "frontmatter":
+		switch f.Key {
+		case "title":
+			return "title"
+		case "aliases":
+			return "alias"
+		case "tags":
+			return "tag"
+		default:
+			return f.Key
+		}
+	default:
+		return f.Source
+	}
 }
 
 // ---- tokenization & scoring ----------------------------------------------
@@ -317,69 +371,69 @@ func tokenPrefixWindow(term, field []string) bool {
 	return false
 }
 
-type fieldScore struct {
-	field  string
-	weight int
-}
-
-// bestMetadataField returns the single best-matching metadata field for one
-// term (already tokenized), or a zero fieldScore if none match. Candidates
-// are considered in DESIGN.md's weight order; a strict ">" keeps that order
-// as the tie-break when two fields score equally (e.g. an exact title and
-// an exact alias both at 40).
-func bestMetadataField(term []string, pi *pageInfo) fieldScore {
-	var best fieldScore
-
-	consider := func(field string, weight int) {
-		if weight > best.weight {
-			best = fieldScore{field: field, weight: weight}
-		}
-	}
-
-	consider("slug", scoreExactSub(term, pi.slugTokens, weightSlugExact, weightSlugSub))
-	consider("title", scoreExactSub(term, pi.titleTokens, weightTitleExact, weightTitleSub))
-
-	aliasBest := 0
-	for _, a := range pi.aliasesTokens {
-		if w := scoreExactSub(term, a, weightAliasExact, weightAliasSub); w > aliasBest {
-			aliasBest = w
-		}
-	}
-	consider("alias", aliasBest)
-
-	tagBest := 0
-	for _, t := range pi.tagsTokens {
-		if tokenPrefixWindow(term, t) {
-			tagBest = weightTag
-			break
-		}
-	}
-	consider("tag", tagBest)
-
-	if tokenPrefixWindow(term, pi.indexSummaryTokens) {
-		consider("index", weightIndex)
-	}
-	if tokenPrefixWindow(term, pi.h1Tokens) {
-		consider("h1", weightH1)
-	}
-
-	return best
-}
-
-// scoreExactSub scores one field against term: exactW when the whole
-// token sequences are equal, subW when term's tokens merely align (as
-// prefixes) somewhere in field's tokens, 0 otherwise.
-func scoreExactSub(term, field []string, exactW, subW int) int {
-	if len(term) == 0 || len(field) == 0 {
+// matchField scores term against f's value(s) on pi: 0 if none match, else
+// f.Weight — except f.Source == "slug" with match: token, which keeps its
+// exact-match bonus (DESIGN.md §18.2, config.FindField's doc comment): a
+// full token-sequence match scores f.Weight, a mere substring/prefix-window
+// match scores f.Weight/2.
+func matchField(term termInfo, pi *pageInfo, f config.FindField) int {
+	vals := pi.values(f)
+	if len(vals) == 0 {
 		return 0
 	}
-	if tokenExact(term, field) {
-		return exactW
-	}
-	if tokenPrefixWindow(term, field) {
-		return subW
+	for _, v := range vals {
+		if f.Match == "exact" {
+			if strings.ToLower(strings.TrimSpace(v)) == term.rawLC {
+				return f.Weight
+			}
+			continue
+		}
+		vt := tokenize(v)
+		if len(vt) == 0 {
+			continue
+		}
+		if f.Source == "slug" {
+			if tokenExact(term.tokens, vt) {
+				return f.Weight
+			}
+			if tokenPrefixWindow(term.tokens, vt) {
+				return f.Weight / 2
+			}
+			continue
+		}
+		if tokenPrefixWindow(term.tokens, vt) {
+			return f.Weight
+		}
 	}
 	return 0
+}
+
+// bestField returns the single best-matching non-body field for one term,
+// or a zero weight if none match. fields is v.Config.Find.Fields in order;
+// ties (equal weight) break in favor of the earlier entry (DESIGN.md
+// §18.2), via a strict ">" comparison.
+func bestField(term termInfo, pi *pageInfo, fields []config.FindField) (fieldLabel string, weight int) {
+	for _, f := range fields {
+		if f.Source == "body" {
+			continue // body is a last-resort fallback only (§18.4), handled separately
+		}
+		if w := matchField(term, pi, f); w > weight {
+			weight = w
+			fieldLabel = label(f)
+		}
+	}
+	return fieldLabel, weight
+}
+
+// bodyField returns config's "body" field entry, if any (the default config
+// always has one; a vault-defined find.fields list might not).
+func bodyField(fields []config.FindField) (config.FindField, bool) {
+	for _, f := range fields {
+		if f.Source == "body" {
+			return f, true
+		}
+	}
+	return config.FindField{}, false
 }
 
 // scorePage sums, per term, the single best-matching field's weight (0 if
@@ -387,7 +441,7 @@ func scoreExactSub(term, field []string, exactW, subW int) int {
 // that contributed (in first-contributed order), and — with opts.Body — the
 // first compiled-truth line recorded per body-fallback term, capped at 3
 // lines total per page (DESIGN.md §18.4).
-func scorePage(pi *pageInfo, termToks [][]string, opts Options) (score int, matched []string, body []BodyMatch) {
+func scorePage(pi *pageInfo, terms []termInfo, fields []config.FindField, opts Options) (score int, matched []string, body []BodyMatch) {
 	seen := map[string]bool{}
 	add := func(field string) {
 		if !seen[field] {
@@ -396,34 +450,35 @@ func scorePage(pi *pageInfo, termToks [][]string, opts Options) (score int, matc
 		}
 	}
 
-	var bodyTermToks [][]string
-	for _, t := range termToks {
-		bf := bestMetadataField(t, pi)
-		if bf.weight > 0 {
-			score += bf.weight
-			add(bf.field)
+	var bodyTerms []termInfo
+	for _, t := range terms {
+		fieldLabel, w := bestField(t, pi, fields)
+		if w > 0 {
+			score += w
+			add(fieldLabel)
 			continue
 		}
 		if opts.Body {
-			bodyTermToks = append(bodyTermToks, t)
+			bodyTerms = append(bodyTerms, t)
 		}
 	}
 
-	if len(bodyTermToks) == 0 {
+	bf, ok := bodyField(fields)
+	if len(bodyTerms) == 0 || !ok {
 		return score, matched, nil
 	}
 
 	// A found term stops scanning for that term (first matching line per
 	// body term), and recording stops once the page-wide cap of 3 lines is
 	// hit — whichever comes first.
-	found := make([]bool, len(bodyTermToks))
+	found := make([]bool, len(bodyTerms))
 	for _, ln := range pi.compiledTruthLines() {
 		lineTokens := tokenize(ln.text)
-		for i, t := range bodyTermToks {
+		for i, t := range bodyTerms {
 			if found[i] {
 				continue
 			}
-			if tokenPrefixWindow(t, lineTokens) {
+			if tokenPrefixWindow(t.tokens, lineTokens) {
 				found[i] = true
 				if len(body) < 3 {
 					body = append(body, BodyMatch{Line: ln.num, Text: snippet(ln.text)})
@@ -435,7 +490,7 @@ func scorePage(pi *pageInfo, termToks [][]string, opts Options) (score int, matc
 	for _, f := range found {
 		if f {
 			anyFound = true
-			score += weightBody
+			score += bf.Weight
 		}
 	}
 	if anyFound {

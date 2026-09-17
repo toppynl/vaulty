@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/toppynl/vaulty/internal/filter"
 	"github.com/toppynl/vaulty/internal/find"
 	"github.com/toppynl/vaulty/internal/name"
 )
@@ -15,12 +16,13 @@ type findOpts struct {
 	typ   string
 	body  bool
 	only  []string
+	where []string
 }
 
 func (a *app) newFindCmd() *cobra.Command {
 	o := findOpts{limit: 10}
 	cmd := &cobra.Command{
-		Use:   "find <term> [<term>...]",
+		Use:   "find [<term>...]",
 		Short: "Rank vault pages matching term(s) (slug/title/aliases/tags/index/H1, optionally body)",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -31,12 +33,21 @@ func (a *app) newFindCmd() *cobra.Command {
 	cmd.Flags().StringVar(&o.typ, "type", "", "only pages whose frontmatter type equals this")
 	cmd.Flags().BoolVar(&o.body, "body", false, "also match compiled-truth body text (lowest-weight fallback field)")
 	cmd.Flags().StringSliceVar(&o.only, "only", nil, "repeatable/comma-separated: restrict to a dir (\"wiki\", \"now/actions\") or glob (\"wiki/*.md\"); default is the whole vault")
+	cmd.Flags().StringArrayVar(&o.where, "where", nil, "repeatable: exact frontmatter filter key=value (split on the first \"=\"; list keys match if they contain the value); with no terms, lists every matching page sorted by path")
 	return cmd
 }
 
 func (a *app) runFind(o findOpts, rawTerms []string) error {
 	terms := find.NormalizeTerms(rawTerms)
-	if len(terms) == 0 {
+	var where []filter.Filter
+	for _, w := range o.where {
+		f, err := filter.Parse(w)
+		if err != nil {
+			return &ExitError{Code: ExitUsage, Err: fmt.Errorf("find: %w", err)}
+		}
+		where = append(where, f)
+	}
+	if len(terms) == 0 && o.typ == "" && len(where) == 0 {
 		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("find: no search terms given")}
 	}
 
@@ -45,7 +56,7 @@ func (a *app) runFind(o findOpts, rawTerms []string) error {
 		return err
 	}
 
-	results, err := find.Search(v, terms, find.Options{Body: o.body, Only: o.only, Type: o.typ})
+	results, err := find.Search(v, rawTerms, find.Options{Body: o.body, Only: o.only, Type: o.typ, Where: where})
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
