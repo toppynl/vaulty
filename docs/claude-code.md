@@ -1,58 +1,62 @@
-# Wiring vaulty into a vault's Claude Code setup
+# Using vaulty with Claude Code
 
-This applies these snippets to a vault (Peep's `me` vault, or a vault created
-from `me-template`) — a separate step from building vaulty itself. This repo
-never edits a vault.
-
-## 1. Install
-
-Local machine:
+## 1. Install the binary
 
 ```bash
-scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/toppynl/vaulty/main/scripts/install.sh | bash
 ```
 
-Cloud / CI bootstrap — no `gh`, no token, no Go toolchain needed (the repo
-is public and `install.sh` downloads a release binary directly):
+The repo is public: no token, `gh` or Go toolchain needed. Rerunning the
+script upgrades to the latest release. `VAULTY_INSTALL_DIR` picks the
+target directory (default `~/.local/bin`), and `VAULTY_VERSION` pins a
+release. In a cloud or CI bootstrap, append `|| echo "vaulty: skipped"` so
+a network hiccup never fails the run.
 
-```bash
-if ! command -v vaulty >/dev/null 2>&1; then
-  curl -fsSL https://raw.githubusercontent.com/toppynl/vaulty/main/scripts/install.sh | bash \
-    && export PATH="$HOME/.local/bin:$PATH" && echo "vaulty: installed" \
-    || { echo "vaulty: install FAILED"; fail=1; }
-else
-  echo "vaulty: present ($(vaulty version 2>/dev/null))"
-fi
+## 2. Install the plugin
+
+This repo is also a Claude Code plugin marketplace:
+
+```
+/plugin marketplace add toppynl/vaulty
+/plugin install vaulty@vaulty
 ```
 
-## 2. Permission allowlist
+The plugin ships:
 
-Add to the vault's `.claude/settings.json` (`permissions.allow`):
+| component | what it does |
+|---|---|
+| `vaulty-read` skill | find pages (`find`/`search`) and read compiled truth, sections or Timeline history |
+| `vaulty-write` skill | append Timeline entries (`--touch`) and log entries instead of hand-editing |
+| `vaulty-maintain` skill | lint, fix findings, respect the ratchet baseline, set vaulty up in a vault |
+| `vault-reader` agent | read-only haiku subagent: returns verbatim fragments + verdict, keeps page text out of the main context |
+
+The plugin version follows vaulty releases, so the skills match the
+latest binary. The plugin ships no hooks or permissions: those change how
+a vault behaves and are opt-in (below).
+
+Without plugins, copy `skills/*` into the vault's `.claude/skills/` and
+`agents/vault-reader.md` into `.claude/agents/`. Vault-specific rules
+(which dirs matter, index conventions, commit policy) belong in the
+vault's own CLAUDE.md or a local agent that builds on these.
+
+## 3. Permission allowlist
+
+In the vault's `.claude/settings.json`:
 
 ```json
-"Bash(vaulty:*)"
+{ "permissions": { "allow": ["Bash(vaulty:*)"] } }
 ```
 
-## 3. PostToolUse hook (touched-page enforcement)
+## 4. Lint on edit (PostToolUse hook)
 
-Before wiring the hook, create the ratchet baseline once (DESIGN.md §6.1a) —
-without `.vaulty-baseline.json` the ratchet is inactive and PG002 blocks
-every oversized legacy page unconditionally, not just growth:
+Create the ratchet baseline once first (DESIGN.md §6.1a). Without
+`.vaulty-baseline.json` the ratchet is inactive and PG002 blocks every
+oversized legacy page, not just pages that grew:
 
 ```bash
 vaulty timeline lint --write-baseline
 git add .vaulty-baseline.json && git commit -m "add ratchet baseline"
 ```
-
-From then on, `--write-baseline` is shrink-only by default: it tightens
-pages that improved but refuses to raise a page's baselined debt, so a
-skill or agent blocked by the hook cannot use its `Bash(vaulty:*)`
-permission to rewrite the baseline around the block. Both flags are a
-human-only decision (§8d): a skill or agent blocked by the ratchet fixes
-the flagged page, or asks Peep — it never runs `--write-baseline` (bare or
-with `--accept-growth`) itself. A person runs `--write-baseline` bare
-periodically to tighten the baseline after real improvements, and
-`--accept-growth` explicitly, after reviewing the growth it reports.
 
 ```json
 {
@@ -72,162 +76,61 @@ periodically to tighten the baseline after real improvements, and
 }
 ```
 
-The file filter (which paths get checked) lives in `vaulty` itself
-(`lint.hook_paths` in `.vaulty.yml`, default `["wiki/**"]`) — the hook
-matcher only sees tool names, not paths. A missing `vaulty` binary is a
-silent no-op, never a blocker.
+The set of files checked is `lint.hook_paths` in `.vaulty.yml` (default
+`["wiki/**"]`); the hook matcher only sees tool names. A missing binary is
+a silent no-op. `vaulty timeline append` runs through Bash, so appending a
+Timeline line does not trigger the hook.
 
-## 4. vault-reader agent
+## 5. Hardening for agent-driven vaults
 
-Add `Bash` to the agent's tool list. Replace "read the page, stop at the
-divider" instructions with:
+An agent with `Bash(vaulty:*)` can reach a few files worth protecting:
+`.vaulty-baseline.json` (the ratchet), `.vaulty.yml` (paths, severities,
+overrides) and `.claude/settings*.json` (which hold these permissions and
+hooks).
 
-- `vaulty timeline read <name>` — compiled truth only (default reading).
-- `vaulty timeline read <name> --since YYYY-MM-DD` or `--last N` — only when
-  the question is actually about history or "wanneer" (when).
+**Threat model.** This hardens against a *sloppy* agent: one that deletes
+the baseline while cleaning up, hand-edits it to pass lint, or reaches for
+`--write-baseline --accept-growth` because it's blocked. It does not try to
+stop an adversarial agent with a regex guard on Bash commands. A heredoc,
+`bash -c`, tmux or an alias gets around any pattern, and the false
+positives cost more than the coverage. The backstops below work whatever
+the shell did.
 
-For a page over the token threshold, grep for headings and read by offset
-until a `--section` flag exists (reserved, not yet built).
+vaulty itself enforces two boundaries:
 
-## 5. ingest / brief-watch / correction-capture / weekly-review
+- **Content allowlist** (DESIGN.md §3.5): only `.md` files under `dirs`,
+  outside hidden folders, not excluded, checked after symlinks. An agent
+  steered by chat input can't use vaulty to read `.git/config` or other
+  secrets.
+- **Shrink-only baseline**: `--write-baseline` refuses growth unless
+  `--accept-growth` is given.
 
-Every "append a Timeline line" instruction becomes:
-
-```bash
-vaulty timeline append <page> "- **YYYY-MM-DD** | [[P]] — reason"
-```
-
-Add `--touch` only where the skill wants `updated:` bumped — not for
-backlink log lines. `vaulty timeline append` runs through the Bash tool
-(not Edit/Write), so it does not trigger the PostToolUse hook — appending a
-Timeline line is not a "touch" of compiled truth.
-
-`--touch`/`--dry-run` work in any position — before or after `<page>
-"<entry>"` — so `vaulty timeline append <page> "<entry>" --touch` and
-`vaulty timeline append --touch <page> "<entry>"` are equivalent; use
-whichever reads better in a skill. The entry may also be written without
-its leading `- ` (`"**YYYY-MM-DD** | ..."`); `append` adds the bullet
-itself. If an entry must literally start with `--`, put it after a bare
-`--` separator: `vaulty timeline append <page> -- "--literal entry"`.
-
-## 6. lint skill
-
-- Touched-file check: `vaulty timeline lint --changed` (findings on the
-  changed files must be fixed).
-- Vault-wide health: `vaulty timeline lint` (prints the `count PG001`/
-  `count PG002` summary lines; per-file findings need `--warnings` to show
-  warnings too).
-
-## 7. `.vaulty.yml`
-
-Peep's vault matches the built-in defaults, so no config file is required.
-Ship `examples/vaulty.yml` as a documented reference; copy it to the vault
-root as `.vaulty.yml` only if a key needs overriding (e.g.
-`lint.severity: {TL006: error}` once the legacy `| what` backlog is fixed).
-
-To keep a working layer like `now/tracking/**` (a `type: work` layer that
-churns constantly and isn't compiled knowledge) out of the TL006/TL008
-ratchet entirely — plain warnings forever, never promoted to error for
-being un-baselined, never written into `.vaulty-baseline.json` — add:
-
-```yaml
-lint:
-  overrides:
-    - paths: ["now/tracking/**"]
-      ratchet:
-        TL006: false
-        TL008: false
-```
-
-`lint.overrides` is generic (any glob, any code, `severity` too, per
-DESIGN.md §4.1) — this is just the one exemption Peep's vault actually
-needs today.
-
-## 8. Hardening for agent-driven vaults
-
-An agent vault gives its own sessions broad `Bash(vaulty:*)` access, which
-makes a few files worth protecting explicitly: `.vaulty-baseline.json` (the
-ratchet — DESIGN.md §6.1a), `.vaulty.yml` (severity/overrides/paths config),
-and `.claude/settings*.json` (the permissions/hooks below live there — an
-agent that can rewrite its own settings can undo all of this). vaulty
-itself closes the `--write-baseline`/`--accept-growth` bypasses at the CLI
-level (DESIGN.md §6.1a, Peep's 2026-09-15 decisions); the snippets below add
-defense in depth around it. They are documentation only — none of this
-ships inside a vault from this repo.
-
-**Threat model (Peep's decision, 2026-09-15, hardening round 3).** This
-section hardens against a *sloppy* agent — one that runs `rm
-.vaulty-baseline.json` while cleaning something up, hand-edits the file
-while "fixing" a lint failure, or reaches for `--write-baseline
---accept-growth` because it's blocked and that flag is right there. It does
-**not** try to hold against a genuinely adversarial agent, and deliberately
-does not attempt a `PreToolUse` Bash-command guard (regex-matching
-`rm`/`mv`/`>`/`tee` against the command string) to get closer to that: a CLI
-running inside a real shell has a pty, `tmux`, `script`, a heredoc, a
-wrapper alias, or a second shell one `bash -c` away from any regex a hook
-can write — closing one phrasing just moves the bypass to the next one,
-while the regex itself keeps producing false positives on legitimate
-commands that happen to contain `rm`, `>` or `tee` as a substring. The
-backstops below (deny-listed files, and a check that runs *after* whatever
-Bash did, not by pattern-matching what it typed) hold regardless of which
-shell trick got there.
-
-**(a) Deny Edit/Write on the protected files.** Belt-and-suspenders against
-a skill or agent editing any of them directly instead of through the CLI
-(`.claude/settings.json`, `permissions.deny`):
+**(a) Deny direct edits** (`.claude/settings.json`):
 
 ```json
 {
   "permissions": {
     "deny": [
-      "Edit(.vaulty-baseline.json)",
-      "Write(.vaulty-baseline.json)",
-      "Edit(.vaulty.yml)",
-      "Write(.vaulty.yml)",
-      "Edit(.claude/settings*.json)",
-      "Write(.claude/settings*.json)"
+      "Edit(.vaulty-baseline.json)", "Write(.vaulty-baseline.json)",
+      "Edit(.vaulty.yml)", "Write(.vaulty.yml)",
+      "Edit(.claude/settings*.json)", "Write(.claude/settings*.json)"
     ]
   }
 }
 ```
 
-**(b) No `Bash` command-pattern guard, on purpose.** See the threat model
-above — a regex `PreToolUse` hook over `Bash` commands was tried and
-dropped: a pty/tmux/heredoc detour defeats it trivially, and false
-positives on ordinary commands cost more than the coverage is worth. (a)'s
-deny-list plus (c)'s after-the-fact check give the same protection against
-the sloppiness this is actually scoped to, without either problem.
-
-**(c) Pre-commit backstop (recommended): `vaulty timeline lint
---check-baseline --staged`.** This is the actual second line of defense:
-read-only, runs after whatever a Bash command did, and refuses if the
-ratchet baseline about to be committed is higher on any page/code than the
-one committed at HEAD — regardless of how it got there (a bypassed
-`--write-baseline`, a hand-edit, `rm` + a fresh recompute, an override that
-happened to zero out a stale entry the wrong way). `--staged` compares the
-git index (what the commit will actually ship) rather than the working
-copy, so staging a grown baseline and then restoring the file on disk still
-gets caught. It shares `resolveWriteBaselineOld` with `--write-baseline`
-itself (DESIGN.md §6.1a), so the two can never disagree about what counts
-as growth:
+**(b) Pre-commit backstop:**
 
 ```bash
 #!/bin/sh
-# .git/hooks/pre-commit (or wire into an existing pre-commit runner)
-vaulty [--vault <dir>] timeline lint --check-baseline --staged
+# .git/hooks/pre-commit
+vaulty timeline lint --check-baseline --staged
 ```
 
-Always run it, unconditionally — don't gate it on a `git diff --cached
---name-only | grep` for the baseline filename first: that grep only
-catches the baseline at its default path, misses a vault-configured
-`lint.baselinePath` elsewhere (e.g. `sub/.vaulty-baseline.json`), and on a
-miss skips the check entirely instead of failing safe. `--check-baseline
---staged` is read-only and cheap, so there is no cost to always running
-it.
+It is read-only and fails if the staged baseline is higher than HEAD's for
+any page, however that happened. Run it unconditionally: gating it on a
+grep for the baseline filename misses a configured `lint.baseline_path`.
 
-**(d) Skill-docs rule: agents never run `--write-baseline` or
-`--accept-growth`.** Any skill or CLAUDE.md instructing an agent to use
-`vaulty` must say so explicitly — writing the baseline (shrink or growth)
-is a human review action (DESIGN.md §6.1a); an agent that hits a ratchet
-error fixes the underlying page or asks Peep, it does not reach for either
-flag to make the check pass.
+**(c) Agents never write the baseline.** Any skill or CLAUDE.md that uses
+vaulty must say so; the `vaulty-maintain` skill does. An agent blocked by
+the ratchet fixes the page or asks a human.

@@ -92,6 +92,9 @@ scripts/parity/           vault round-trip live proof (package parity, step 2)
 scripts/install.sh        installer (step 5)
 testdata/golden/          CLI golden cases (synthetic content only, §10.2)
 examples/vaulty.yml       documented defaults
+.claude-plugin/           Claude Code plugin + single-plugin marketplace manifest
+skills/, agents/          plugin skills (vaulty-read/-write/-maintain) and vault-reader agent
+docs/claude-code.md       wiring vaulty into a vault's Claude Code setup
 .goreleaser.yaml, .github/workflows/{ci,release}.yml
 ```
 

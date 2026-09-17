@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "vaulty",
+  "description": "vaulty: tooling for LLM-maintained markdown knowledge vaults.",
+  "owner": {
+    "name": "Toppy",
+    "url": "https://github.com/toppynl"
+  },
+  "plugins": [
+    {
+      "name": "vaulty",
+      "description": "Find, read and maintain pages in a markdown vault with the vaulty CLI.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

@@ -336,11 +336,19 @@ An annotated copy ships at [`examples/vaulty.yml`](examples/vaulty.yml).
 
 ## Using with Claude Code / LLM agents
 
-`vaulty` is designed to sit behind an agent, not a human typing commands.
-See [`docs/claude-code.md`](docs/claude-code.md) for wiring it into a
-vault's Claude Code setup: install step, permission allowlist, a
-PostToolUse hook that lints a page on every edit, and skill snippets for
-reading/appending Timeline entries.
+`vaulty` is built to sit behind an agent. This repo is also a Claude Code
+plugin with skills for reading (`vaulty-read`), writing (`vaulty-write`)
+and maintaining (`vaulty-maintain`) a vault, plus a read-only
+`vault-reader` subagent:
+
+```
+/plugin marketplace add toppynl/vaulty
+/plugin install vaulty@vaulty
+```
+
+Not using plugins? Copy `skills/` and `agents/` into the vault's
+`.claude/`. See [`docs/claude-code.md`](docs/claude-code.md) for
+permissions, the lint-on-edit hook and hardening.
 
 ## Content boundary
 
