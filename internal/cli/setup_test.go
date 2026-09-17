@@ -43,3 +43,14 @@ func TestSetupInstallsShippedSkills(t *testing.T) {
 		t.Fatalf("unknown target: exit %d, stderr %q", exit, stderr)
 	}
 }
+
+// --keep-existing and --force are mutually exclusive, like --dir and --global.
+func TestSetupKeepExistingAndForceMutuallyExclusive(t *testing.T) {
+	v := t.TempDir()
+	writeFile(t, filepath.Join(v, ".vaulty.yml"), "version: 1\n")
+
+	_, stderr, exit := runCLI(t, v, "setup", "claude", "--keep-existing", "--force")
+	if exit != ExitUsage || !strings.Contains(stderr, "--keep-existing") {
+		t.Fatalf("keep-existing + force: exit %d, stderr %q, want %d and a mention of --keep-existing", exit, stderr, ExitUsage)
+	}
+}

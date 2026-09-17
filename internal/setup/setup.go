@@ -5,7 +5,9 @@
 // Each install root keeps a manifest (.vaulty-setup.json) with the sha256 of
 // every file it wrote. A rerun updates a file only when it still matches the
 // manifest (nobody edited it since); anything else that differs is a conflict
-// and nothing is written unless the caller forces it.
+// and nothing is written unless the caller forces it (overwrite) or asks to
+// keep existing files (--keep-existing: the conflicting file is left alone
+// and everything else is still applied).
 package setup
 
 import (
@@ -86,6 +88,7 @@ const (
 	Updated   Status = "updated"
 	Unchanged Status = "unchanged"
 	Conflict  Status = "conflict" // exists, differs, not written by setup (or edited since)
+	Kept      Status = "kept"     // conflict left untouched by --keep-existing
 )
 
 // File is one planned file.
@@ -194,8 +197,22 @@ func classify(dest string, content []byte, recorded string) (Status, string) {
 	return Conflict, "edited since vaulty setup installed it"
 }
 
+// MarkKeptExisting turns every Conflict file in p into Kept, so Apply leaves
+// it untouched (not written, manifest entry left exactly as it was: absent
+// if the file was never vaulty's, or whatever was recorded if the user
+// edited a file setup previously installed).
+func (p *Plan) MarkKeptExisting() {
+	for i, f := range p.Files {
+		if f.Status == Conflict {
+			p.Files[i].Status = Kept
+		}
+	}
+}
+
 // Apply writes the plan. With force, conflicts are overwritten; without it,
-// a plan with conflicts writes nothing and returns an error.
+// a plan with conflicts writes nothing and returns an error. A file marked
+// Kept (via MarkKeptExisting, --keep-existing) is always skipped: not
+// written, and its manifest entry is left exactly as it was.
 func Apply(p *Plan, version string, force bool) error {
 	if c := p.Conflicts(); len(c) > 0 && !force {
 		return fmt.Errorf("%d file(s) would be overwritten; rerun with --force to replace them", len(c))
@@ -205,6 +222,9 @@ func Apply(p *Plan, version string, force bool) error {
 		return err
 	}
 	for i, f := range p.Files {
+		if f.Status == Kept {
+			continue
+		}
 		if f.Status != Unchanged {
 			if err := writeFile(f.Dest, f.content); err != nil {
 				return err
