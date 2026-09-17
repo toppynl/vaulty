@@ -8,16 +8,13 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"unicode"
-	"unicode/utf8"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/doc"
+	"github.com/toppynl/vaulty/internal/page"
 	"github.com/toppynl/vaulty/internal/timeline"
 	"github.com/toppynl/vaulty/internal/vault"
 )
@@ -112,10 +109,7 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 	}
 	files = vault.FilterOnly(files, vault.OnlyPatterns(opts.Only))
 
-	index, err := loadIndex(v)
-	if err != nil {
-		return nil, err
-	}
+	index := page.LoadIndex(v.Root, v.Config.Find.Index)
 
 	termToks := make([][]string, len(terms))
 	for i, t := range terms {
@@ -194,7 +188,7 @@ func newPageInfo(rel string, src []byte, tlCfg config.Timeline) *pageInfo {
 	pi := &pageInfo{rel: rel, slug: slug, slugTokens: tokenize(slug), src: src, tlCfg: tlCfg}
 	pi.doc = doc.Parse(rel, src)
 
-	fm := parseFrontmatter(pi.doc)
+	fm := page.ParseFrontmatter(pi.doc)
 	pi.fmType = fm.Type
 	pi.title = fm.Title
 	pi.titleTokens = tokenize(fm.Title)
@@ -209,13 +203,8 @@ func newPageInfo(rel string, src []byte, tlCfg config.Timeline) *pageInfo {
 		}
 	}
 
-	for _, h := range doc.Headings(pi.doc) {
-		if h.Level == 1 {
-			pi.h1 = h.Text
-			pi.h1Tokens = tokenize(h.Text)
-			break
-		}
-	}
+	pi.h1 = page.FirstH1(pi.doc)
+	pi.h1Tokens = tokenize(pi.h1)
 	return pi
 }
 
@@ -250,121 +239,6 @@ func (pi *pageInfo) compiledTruthLines() []bodyLine {
 		pi.bodyLns = append(pi.bodyLns, bodyLine{num: n, text: text})
 	}
 	return pi.bodyLns
-}
-
-// ---- frontmatter (lenient) ---------------------------------------------
-
-type frontmatter struct {
-	Type    string
-	Title   string
-	Aliases []string
-	Tags    []string
-}
-
-type rawFrontmatter struct {
-	Type    string `yaml:"type"`
-	Title   string `yaml:"title"`
-	Aliases any    `yaml:"aliases"`
-	Tags    any    `yaml:"tags"`
-}
-
-// parseFrontmatter parses d's frontmatter leniently: broken YAML, or no
-// frontmatter at all, yields a zero-value frontmatter rather than an error
-// — a page with malformed frontmatter must still match on slug/H1/body
-// (DESIGN.md §18: "never fails the command").
-func parseFrontmatter(d *doc.Doc) frontmatter {
-	if !d.HasFM {
-		return frontmatter{}
-	}
-	inner := frontmatterInner(d)
-	var raw rawFrontmatter
-	if err := yaml.Unmarshal([]byte(inner), &raw); err != nil {
-		return frontmatter{}
-	}
-	return frontmatter{
-		Type:    raw.Type,
-		Title:   raw.Title,
-		Aliases: toStringSlice(raw.Aliases),
-		Tags:    toStringSlice(raw.Tags),
-	}
-}
-
-// frontmatterInner strips the two "---" delimiter lines, returning just the
-// YAML body between them.
-func frontmatterInner(d *doc.Doc) string {
-	raw := string(d.Src[d.Frontmatter.Start:d.Frontmatter.End])
-	lines := strings.Split(raw, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	if len(lines) < 2 {
-		return ""
-	}
-	return strings.Join(lines[1:len(lines)-1], "\n")
-}
-
-func toStringSlice(v any) []string {
-	switch x := v.(type) {
-	case nil:
-		return nil
-	case string:
-		if x == "" {
-			return nil
-		}
-		return []string{x}
-	case []any:
-		var out []string
-		for _, e := range x {
-			if s, ok := e.(string); ok && s != "" {
-				out = append(out, s)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-// ---- index.md summaries -------------------------------------------------
-
-// indexLineRe matches "- [[name]] — <rest of line>" lines (DESIGN.md §18:
-// the vault's index.md convention). The name may itself be a wikilink with
-// an alias/anchor ("name|alias" or "name#heading"); only the part before
-// "|"/"#" is the lookup key, matching page-name resolution elsewhere
-// (vault.Resolve). The summary is everything after the first " — ": a
-// trailing "(YYYY-MM-DD)" date is the common case, but not every line ends
-// in one (e.g. no trailing parenthetical at all), and some end in a
-// non-date status parenthetical ("(DRAFT, 2026-06-13)", "(seed,
-// 2026-09-11)") that still carries a date inside it — trailingDateParenRe
-// strips exactly one trailing parenthetical, and only when it contains a
-// full date, rather than assuming the fixed "(YYYY-MM-DD)" shape.
-var indexLineRe = regexp.MustCompile(`^- \[\[([^\]]+)\]\] — (.+)$`)
-var trailingDateParenRe = regexp.MustCompile(`\s*\([^()]*\d{4}-\d{2}-\d{2}[^()]*\)\s*$`)
-
-// loadIndex reads config.Find.Index (default "index.md") and returns a
-// name -> summary map. A missing file is skipped silently; lines that don't
-// match the convention are ignored, never an error.
-func loadIndex(v *vault.Vault) (map[string]string, error) {
-	full := filepath.Join(v.Root, filepath.FromSlash(v.Config.Find.Index))
-	b, err := os.ReadFile(full)
-	if err != nil {
-		return map[string]string{}, nil
-	}
-	out := map[string]string{}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimRight(line, "\r")
-		m := indexLineRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		name := m[1]
-		if i := strings.IndexAny(name, "|#"); i != -1 {
-			name = name[:i]
-		}
-		summary := trailingDateParenRe.ReplaceAllString(m[2], "")
-		out[name] = strings.TrimSpace(summary)
-	}
-	return out, nil
 }
 
 // ---- tokenization & scoring ----------------------------------------------
@@ -567,14 +441,5 @@ func scorePage(pi *pageInfo, termToks [][]string, opts Options) (score int, matc
 // snippet trims s and caps it at 120 bytes, backing off to the nearest
 // UTF-8 rune boundary so a multi-byte rune is never split.
 func snippet(s string) string {
-	s = strings.TrimSpace(s)
-	const max = 120
-	if len(s) <= max {
-		return s
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
+	return page.CapBytes(strings.TrimSpace(s), 120)
 }
