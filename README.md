@@ -1,8 +1,23 @@
 # vaulty
 
-A single static Go binary for LLM-maintained markdown vaults. First scope:
-the `## Timeline` convention (`vaulty timeline lint|read|append`). See
-[`DESIGN.md`](DESIGN.md) for the full spec.
+A single static Go binary for LLM-maintained markdown vaults (an
+Obsidian-style knowledge base kept up to date by an agent, not a human
+typing in an editor). It gives an agent a small set of tools that are
+cheaper and more reliable than raw `grep`/`cat`/manual edits:
+
+- a `## Timeline` convention — append-only history at the bottom of a
+  page, kept separate from the compiled-truth prose above it
+  (`timeline lint|read|append`)
+- an append-only operation log, `log.md` (`log append|last|lint`)
+- `find` — fast page discovery by name/metadata, replacing `grep -r`
+- `search` — ranked full-text search with source-line snippets,
+  replacing "read every page to see if it's relevant"
+
+Every read command is designed to keep an LLM agent's token usage down:
+compiled truth only by default (no history unless asked for), `--max-bytes`
+truncation, `--headings`/`--section` to jump straight to one part of a
+page, and search results that return a couple of snippet lines instead of
+whole files. See [`DESIGN.md`](DESIGN.md) for the full spec.
 
 ## Install
 
@@ -13,47 +28,293 @@ curl -fsSL https://raw.githubusercontent.com/toppynl/vaulty/main/scripts/install
 or, from a checkout: `scripts/install.sh`. Downloads the latest release
 binary (no GitHub auth, no `gh`, no Go toolchain needed), verifies it
 against `checksums.txt`, and installs to `${VAULTY_INSTALL_DIR:-$HOME/.local/bin}`.
-Rerunning it upgrades in place (idempotent: no-op if already at the latest
-version); `--force` reinstalls unconditionally, `VAULTY_VERSION=vX.Y.Z`
-pins a specific release. Falls back to `go install` only when neither
-`curl` nor `wget` is available. See [`docs/claude-code.md`](docs/claude-code.md)
-for wiring vaulty into a vault's Claude Code setup (hook, permission
-allowlist, skill snippets).
 
-## Usage
+- `VAULTY_VERSION=vX.Y.Z` pins a specific release instead of latest.
+- `VAULTY_INSTALL_DIR=...` installs somewhere other than `$HOME/.local/bin`.
+- Rerunning the script is the upgrade path (idempotent: a no-op if
+  you're already at the target version); `--force` reinstalls
+  unconditionally.
+- Falls back to `go install github.com/toppynl/vaulty/cmd/vaulty@latest`
+  only when neither `curl` nor `wget` is available.
+- Supported: `linux`/`darwin` × `amd64`/`arm64`.
 
-```bash
-vaulty timeline lint [paths...]         # check format + page hygiene + shard hygiene (SH*, DESIGN.md §16)
-vaulty timeline lint --write-baseline   # recompute the TL006/TL008/PG002 ratchet baseline
-vaulty timeline read <page> [--timeline] [--since D] [--last N]
-vaulty timeline read <page> --headings                 # list section headings (line, lines, bytes)
-vaulty timeline read <page> --section "<heading text>" # print just that section
-vaulty timeline read <page> [...] --max-bytes N        # cap the printed content, report what was cut
-vaulty timeline append <page> "- **YYYY-MM-DD** | source — what" [--touch] [--dry-run]
+## Quick start
 
-vaulty log append <op> <title> [--body TEXT] [--date YYYY-MM-DD]  # appends to log.md
-vaulty log last [-n N] [--op OP] [--since D]                      # most recent entries
-vaulty log lint                                                   # report malformed entries
+A vault is a directory of markdown pages, optionally with a `.vaulty.yml`
+at its root (every key is optional — see [Configuration](#configuration)):
 
-vaulty find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--json]
-# ranked vault-relative page paths for term(s) — slug/title/aliases/tags/index/H1
-# (and, with --body, compiled-truth text) — replaces raw grep/find as a discovery step
-# --only (repeatable/comma-separated) restricts to a dir ("wiki") or glob ("wiki/*.md")
-
-vaulty search <query...> [--only DIR|GLOB] [--type T] [--where KEY=VALUE] [--limit N] [--timeline] [--json]
-# BM25-ranked full-text search: pages + up to 2 highlighted `L<n>:` snippet lines each
-# query: words (OR), "exact phrase", term~ (fuzzy), term* (prefix), -term (exclude),
-# key:value / --where key=value (exact frontmatter filter, any key; lists match if they contain it)
-vaulty search <query...> --no-cache     # index in memory for this call, never touch the cache
-vaulty search <query...> --rebuild      # force a full rebuild of the cached index
-vaulty search --stats                   # cache path, pages, index size, last update (DESIGN.md §19.3)
+```yaml
+# .vaulty.yml
+version: 1
 ```
 
-`<page>` accepts a bare name (`toppy`), a path (`wiki/systems/toppy.md`), or
-a `[[wikilink]]`. Run any subcommand with `--json` for machine-readable
-output, or `vaulty timeline <cmd> --help` for the full flag list.
+A page looks like this — YAML frontmatter, compiled-truth prose, then a
+divider and an append-only `## Timeline`:
 
-## Develop
+```markdown
+---
+type: system
+title: Billing
+updated: 2026-09-10
+---
+
+# Billing
+
+Billing runs on Acme Pay. It invoices customers monthly and syncs
+payment status back to the CRM every night.
+
+---
+
+## Timeline
+
+- **2026-08-01** | acme — billing system migrated to Acme Pay.
+- **2026-09-10** | acme — added nightly CRM sync.
+```
+
+```bash
+vaulty timeline lint                              # check the whole vault
+vaulty timeline read billing                       # print the compiled truth only
+vaulty timeline append billing "- **2026-09-17** | acme — added dunning emails." --touch
+vaulty find billing                                # discover the page by name
+vaulty search "crm sync"                           # ranked full-text search with snippets
+vaulty log append deploy "billing v2 shipped" --body "rolled out to all tenants"
+```
+
+## Vault conventions
+
+- **Compiled truth vs. Timeline.** Everything above the `---` divider is
+  the current state of the page, rewritten in place as things change.
+  Everything in `## Timeline` (the last section, exactly one per page) is
+  an append-only, oldest-first history of what happened — never edited,
+  only added to.
+- **Entry format.** `- **YYYY-MM-DD** | source — what`, where ` — ` is an
+  em-dash (U+2014) with a space on each side. Long entries wrap onto
+  continuation lines indented with 2 spaces. `vaulty timeline append`
+  writes this format for you; `vaulty timeline lint` checks it.
+- **Page resolution.** Anywhere a command takes `<page>`, you can pass a
+  bare name (`billing`), a path (`wiki/systems/billing.md`), or a
+  `[[wikilink]]`. Bare names are resolved by basename across the
+  configured content dirs and must be unique vault-wide.
+
+Run any subcommand with `--json` for machine-readable output, or
+`vaulty <cmd> --help` for the full flag list.
+
+## Commands
+
+### `timeline lint` / `read` / `append`
+
+```bash
+vaulty timeline lint [paths...] [--hook] [--changed[=REF]] [--warnings] [--strict] [--write-baseline] [--accept-growth] [--check-baseline [--staged]]
+vaulty timeline read <page> [--timeline] [--since DATE] [--last N] [--frontmatter] [--headings] [--section HEADING] [--max-bytes N]
+vaulty timeline append <page> "<entry>" [--touch] [--dry-run]
+```
+
+`lint` checks Timeline format, page hygiene (an oversized or
+work-material-laden compiled truth) and shard hygiene, and exits 1 if it
+finds an error-severity issue. `--write-baseline` recomputes the ratchet
+baseline used to allow existing debt while blocking new debt (shrink-only
+by default — see `DESIGN.md` §6.1a); `--check-baseline [--staged]` is a
+read-only pre-commit check that the baseline about to be committed never
+grew.
+
+```bash
+vaulty timeline lint
+vaulty timeline lint --changed        # only .md files changed vs main
+vaulty timeline lint --hook           # Claude Code PostToolUse mode (reads hook JSON on stdin)
+```
+
+`read` prints the compiled truth by default. `--timeline` (implied by
+`--since`/`--last`) prints Timeline entries instead; `--headings` lists
+section headings (line, line count, byte count) instead of content;
+`--section "<heading text>"` prints just that section; `--max-bytes N`
+caps the output and reports what was cut.
+
+```bash
+vaulty timeline read billing
+vaulty timeline read billing --since 2026-08-01
+vaulty timeline read billing --headings
+vaulty timeline read billing --section "Billing"
+```
+
+`append` inserts a Timeline entry in date order, creating the divider and
+`## Timeline` section if missing. `--touch` also bumps the frontmatter
+`updated:` key to today; `--dry-run` prints the resulting block without
+writing.
+
+```bash
+vaulty timeline append billing "- **2026-09-17** | acme — added dunning emails." --touch
+```
+
+### `log append` / `last` / `lint`
+
+```bash
+vaulty log append <op> <title> [--body TEXT] [--date YYYY-MM-DD]
+vaulty log last [-n N] [--op OP] [--since DATE]
+vaulty log lint
+```
+
+A separate, flat append-only log (`log.md` by default), one heading per
+operation: `## [YYYY-MM-DD] <op> | <title>`, optionally followed by a
+free-form body. `op` must match `^[a-z0-9-]+$`.
+
+```bash
+vaulty log append deploy "billing v2 shipped" --body "rolled out to all tenants"
+vaulty log last -n 5 --op deploy
+vaulty log lint    # malformed headings fail the exit code; out-of-order dates are a warning only
+```
+
+### `find`
+
+```bash
+vaulty find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--json]
+```
+
+Ranks vault pages by term match over slug, frontmatter `title`/`aliases`/
+`tags`, the `index.md` summary and the first H1 — a faster, ranked
+replacement for `grep -r`/`find` as a discovery step. `--body` also
+matches compiled-truth text as a lowest-weight fallback. `--only` (
+repeatable or comma-separated) restricts to a directory (`--only wiki`) or
+a glob (`--only "wiki/*.md"`).
+
+```bash
+vaulty find billing
+vaulty find acme pay --type system
+```
+
+### `search`
+
+```bash
+vaulty search <query...> [--only DIR|GLOB] [--type T] [--where KEY=VALUE] [--limit N] [--timeline] [--no-cache] [--rebuild] [--json]
+vaulty search --stats [--json]
+```
+
+BM25-ranked full-text search over page content: ranked pages plus up to
+two highlighted source-line snippets each, so an agent can judge
+relevance without reading whole pages.
+
+Query syntax:
+
+| Form | Meaning |
+|---|---|
+| `word` | Plain term, OR'ed with other terms; pages matching more terms rank higher. |
+| `"exact phrase"` | Words in this order (unstemmed). |
+| `term~` / `term~1` / `term~2` | Fuzzy match (edit distance auto-picked, or pinned to 1/2). |
+| `term*` | Prefix match. |
+| `-term`, `-"phrase"`, `-term~`, `-term*` | Exclude pages matching it. |
+| `key:value`, `key:"quoted value"` | Exact frontmatter filter on any key (`tag:` is an alias for `tags:`). |
+| `-key:value` | Exclude pages with that frontmatter value. |
+
+`--type T` is shorthand for `--where type=T`; `--where key=value`
+(repeatable) is an exact, AND'ed frontmatter filter, and a list-valued key
+matches if the list contains the value.
+
+```bash
+vaulty search "crm sync"
+vaulty search delivery -hookdeck --type system
+vaulty search --where status=active
+vaulty search --stats
+```
+
+Results come from a per-vault cache under `$VAULTY_CACHE_DIR` (default
+`os.UserCacheDir()/vaulty`, one subdirectory per vault), rebuilt fully
+when its format/mapping/config hash is stale and updated incrementally
+otherwise (unchanged files are skipped by size+mtime, changed ones are
+re-indexed, deleted ones are dropped). If the cache can't be used for any
+reason — no writable cache dir, a lock that can't be acquired, a failed
+rebuild — the command falls back to indexing in memory for that call and
+prints one warning to stderr; a cache problem never fails the search.
+`--no-cache` always indexes in memory; `--rebuild` forces a full rebuild
+and keeps using the cache afterward. `--stats` reports the cache path,
+page count, index size and last-update time without touching it.
+
+Every text field is indexed once per `search.analyzers` entry (default
+`[standard]`, language-neutral) plus once with a raw, unstemmed analyzer
+used for phrase/fuzzy/prefix queries. A vault in a stemmed language (e.g.
+Dutch) lists it in `.vaulty.yml` for better recall on plain-word queries.
+
+### `config print`
+
+```bash
+vaulty config print
+```
+
+Prints the effective config (defaults merged with `.vaulty.yml`), the
+resolved vault root, and the config file path (empty if none was found).
+
+## Configuration
+
+Place `.vaulty.yml` at the vault root. Every key is optional; shown below
+are the built-in defaults (see [`DESIGN.md`](DESIGN.md) §4.1 for full
+detail, including `lint.overrides`):
+
+```yaml
+version: 1
+
+# Content dirs, relative to the root. Page-name resolution and vault-wide
+# scans (find, search, lint) only look here.
+dirs: [wiki, me, now, archive]
+
+# Globs never scanned ("dir/**" = everything below dir; else path.Match).
+exclude: []
+
+frontmatter:
+  updated_key: updated          # bumped by `timeline append --touch`
+
+timeline:
+  heading: "## Timeline"        # exact heading line
+  divider: "---"                # line directly above the heading
+  entry_gap: auto                # blank lines between entries on append: auto | 0 | 1
+
+lint:
+  hook_paths: ["wiki/**"]       # files `timeline lint --hook` checks
+  page_checks:
+    paths: ["wiki/**"]                          # where the page-hygiene checks apply
+    compiled_truth_max_tokens: 3000              # estimate = ceil(bytes/4) above the divider
+    checklist: true                              # "- [ ]" / "- [x]" above the divider = work material
+    table_keywords: [unit, units, step, steps, stap, stappen]
+    heading_keywords: ["agent log"]
+  severity: {}                   # per-code override, e.g. {TL006: error, TL008: off}
+  baseline_path: .vaulty-baseline.json   # ratchet file, relative to the vault root
+  overrides: []                  # per-path severity/ratchet exemptions (see DESIGN.md §4.1)
+  shard:
+    type_dirs: ["wiki/*"]        # a dir is a hub-directory candidate when its parent matches this
+
+log:
+  path: log.md                   # `log append|last|lint` target, relative to the root
+
+find:
+  index: index.md                # vault-relative path `find` reads index summaries from
+
+search:
+  analyzers: [standard]          # text analyzers, one sub-field each; standard = language-neutral.
+                                  # A stemmed-language vault lists codes instead, e.g. [nl, en].
+```
+
+An annotated copy ships at [`examples/vaulty.yml`](examples/vaulty.yml).
+
+## Using with Claude Code / LLM agents
+
+`vaulty` is designed to sit behind an agent, not a human typing commands.
+See [`docs/claude-code.md`](docs/claude-code.md) for wiring it into a
+vault's Claude Code setup: install step, permission allowlist, a
+PostToolUse hook that lints a page on every edit, and skill snippets for
+reading/appending Timeline entries.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success; lint found no error-severity finding (warnings allowed unless `--strict`) |
+| 1 | Lint: at least one error-severity finding (or a warning, under `--strict`) |
+| 2 | Usage error: bad flag/argument, page not found/ambiguous/outside the vault, invalid config, missing git ref (also `lint --hook` with findings) |
+| 3 | Refused: append validation failed, or the page/log wasn't safe to write |
+| 4 | I/O error reading or writing a file |
+
+Every subcommand also accepts `--json` for a single machine-readable JSON
+document on stdout; diagnostics go into that JSON rather than being mixed
+into stdout.
+
+## Development
 
 ```bash
 go build ./...
@@ -61,39 +322,33 @@ go vet ./...
 go test ./...
 ```
 
-Golden CLI tests live in `internal/cli/testdata/golden/`; `go test ./... -update`
-regenerates the `want.*` files after an intentional behavior change.
-
-The vault round-trip check (`scripts/parity/roundtrip_test.go`, package
-`parity`) needs a local copy of the real vault (`VAULTY_PARITY_ROOT=...`)
-and is not part of `go test ./...` in CI — see DESIGN.md §10.3.
-
-## Release
-
-Releases are cut by [release-please](https://github.com/googleapis/release-please):
-every PR title must be a conventional-commit subject (`feat:`, `fix:`,
-`feat!:` for a breaking change, ...) — merges are squashed, so the PR
-title becomes the commit release-please reads. `pr-title.yml` enforces
-this on every PR.
-
-On push to `main`, `release-please.yml` keeps an up-to-date "release PR"
-that accumulates `CHANGELOG.md` entries from the merged PR titles.
-Merging that release PR is the release: release-please tags `vX.Y.Z` and
-publishes a GitHub Release with the changelog notes, then, in the same
-workflow run, a `goreleaser` job checks out that tag and runs goreleaser
-(`linux`/`darwin` × `amd64`/`arm64`) to attach the archives and
-`checksums.txt` to it. (A tag/release created via `GITHUB_TOKEN` doesn't
-trigger other workflows, which is why goreleaser runs as a second job in
-the same workflow rather than depending on the tag-push `release.yml`.)
-
-`release.yml` (tag-push triggered) remains for hand-pushed tags — a
-manual escape hatch. It checks whether a release already exists for the
-tag first and skips goreleaser if so, so it can never double-release a
-tag release-please already cut.
-
-Verify the goreleaser config directly:
+Golden CLI tests live in `internal/cli/testdata/golden/`; after an
+intentional behavior change, regenerate them with:
 
 ```bash
-go run github.com/goreleaser/goreleaser/v2@latest check
-go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean
+go test ./... -update
 ```
+
+## Releasing
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please):
+
+1. Every PR title must be a conventional-commit subject (`feat:`, `fix:`,
+   `feat!:` for a breaking change, ...) — enforced by `pr-title.yml`.
+   Merges are squash-merged, so the PR title becomes the commit
+   release-please reads.
+2. On push to `main`, `release-please.yml` keeps an up-to-date "release
+   PR" that accumulates `CHANGELOG.md` entries from merged PR titles.
+3. Merging that release PR is the release: release-please tags `vX.Y.Z`
+   and publishes a GitHub Release with the changelog notes.
+4. In the same workflow run, a `goreleaser` job checks out that tag and
+   builds `linux`/`darwin` × `amd64`/`arm64` binaries, attaching the
+   archives and `checksums.txt` to the release.
+
+`release.yml` (tag-push triggered) remains as a manual escape hatch for a
+hand-pushed tag; it skips goreleaser if a release already exists for that
+tag, so it can never double-release.
+
+## License
+
+MIT — see LICENSE.
