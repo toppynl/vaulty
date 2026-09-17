@@ -19,7 +19,10 @@ func (a *app) runLogAppend(o logAppendOpts, op, title string) error {
 		return err
 	}
 	rel := v.Config.Log.Path
-	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	full, err := v.ConfigFile(rel)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
+	}
 
 	date := o.date
 	if date == "" {
@@ -141,7 +144,10 @@ func (a *app) runLogLast(o logLastOpts) error {
 	}
 
 	rel := v.Config.Log.Path
-	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	full, err := v.ConfigFile(rel)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
+	}
 	src, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -213,7 +219,10 @@ func (a *app) runLogLint() error {
 		return err
 	}
 	rel := v.Config.Log.Path
-	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	full, err := v.ConfigFile(rel)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
+	}
 	src, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) {

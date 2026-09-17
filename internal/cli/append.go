@@ -21,7 +21,10 @@ func (a *app) runTimelineAppend(o appendOpts, pageArg, entry string) error {
 	if err != nil {
 		return &ExitError{Code: ExitUsage, Err: err}
 	}
-	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	full, err := v.ContentFile(rel)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
+	}
 	orig, err := os.ReadFile(full)
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}

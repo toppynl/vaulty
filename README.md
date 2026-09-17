@@ -250,8 +250,9 @@ detail, including `lint.overrides`):
 ```yaml
 version: 1
 
-# Content dirs, relative to the root. Page-name resolution and vault-wide
-# scans (find, search, lint) only look here.
+# Content dirs, relative to the root. Only .md files under these dirs (no
+# hidden "."-segments, not excluded) are vault content: every command,
+# including path arguments, refuses anything else. See "Content boundary".
 dirs: [wiki, me, now, archive]
 
 # Globs never scanned ("dir/**" = everything below dir; else path.Match).
@@ -299,6 +300,18 @@ See [`docs/claude-code.md`](docs/claude-code.md) for wiring it into a
 vault's Claude Code setup: install step, permission allowlist, a
 PostToolUse hook that lints a page on every edit, and skill snippets for
 reading/appending Timeline entries.
+
+## Content boundary
+
+vaulty only reads, indexes and writes **vault content**: `.md` files under
+`dirs`, with no hidden (`.`-prefixed) segment, not matched by `exclude`.
+Paths are checked after following symlinks. This is an allowlist, so
+`.git/config` (which may hold a token), `.github/`, `.env` files, anything
+outside `dirs` and non-markdown files are unreachable through every
+command. Page arguments, `find`, `search` results (including a stale
+cache), `lint` and config-named files (`log.path`, `find.index`,
+`lint.baseline_path`) are all covered, so an agent driven by untrusted chat
+input cannot use vaulty to read repo secrets. Details: DESIGN.md §3.5.
 
 ## Exit codes
 

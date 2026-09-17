@@ -185,7 +185,7 @@ Output conventions:
    - `root/arg`
    - the same two with `.md` appended, if the argument has no `.md`.
    After `filepath.EvalSymlinks`, the file must be inside the root, else
-   `ErrOutside`.
+   `ErrOutside`, and it must be vault content (§3.5), else `ErrNotContent`.
 3. Otherwise, name mode. Walk `config.dirs` (archive included, excludes
    applied) for files whose basename is exactly `arg + ".md"` (case-sensitive).
    - 1 match: use it.
@@ -194,7 +194,7 @@ Output conventions:
      Filenames are unique vault-wide by convention, so ambiguity is a real
      error.
 
-All three errors exit with code 2.
+All four errors exit with code 2.
 
 ### 3.4 Exit codes
 
@@ -209,6 +209,54 @@ All three errors exit with code 2.
 In hook mode, an internal failure (unreadable config, parser panic caught by
 `recover`) prints to stderr and exits 1, never 2. A tool bug must not be
 turned into a "fix your page" instruction to the model.
+
+### 3.5 Content boundary (allowlist)
+
+vaulty runs as a tool for agents that can be steered by whoever talks to
+them, inside a checkout whose `.git/config` may hold a token. So vaulty
+decides what vault content is, and everything else is unreachable through
+any command. The rule is an allowlist, not a denylist of known-bad paths
+like `.git`: a new kind of sensitive file needs no new rule.
+
+A path is **vault content** (`vault.IsContent`) only when it is:
+
+- a `.md` file,
+- under one of `config.dirs` (`.` allows the whole root),
+- with no segment starting with `.` (so `.git`, `.github`, `.raw`, `.env`
+  dirs and hidden files are all out, even under `dirs: ["."]`),
+- not matched by `exclude`.
+
+It is checked on the symlink-resolved path (`vault.ContentFile`), so a
+symlink inside `wiki/` pointing at `.git/config`, a symlinked directory,
+`wiki/../.git/config`, an absolute path or a `[[wikilink]]` spelling all
+end the same way. The check applies at every read and write:
+
+- page arguments (`timeline read|append|lint`, name and path mode), exit 2;
+- `Walk`, and therefore `find`, `search`, name resolution and vault-wide lint;
+- `lint --changed` and `--hook`, which silently skip non-content;
+- every `search` hit before it is printed, so a stale cache entry for a
+  path that is no longer content is never served.
+
+Files named in config (`log.path`, `find.index`, `lint.baseline_path`)
+are not pages, so they are exempt from the `.md`/`dirs` rule but not from
+the rest. They must be relative, stay inside the root, and have no hidden
+directory segment; only the file name may be hidden, as in
+`.vaulty-baseline.json`. `config.Validate` checks this, and
+`vault.ConfigFile` checks it again after resolving symlinks. `dirs` entries
+must be relative, inside the root, and free of hidden segments.
+
+Choices:
+
+- **Hidden dirs, not just `.git`.** VCS metadata (`.git`, `.hg`, `.jj`),
+  CI config and editor state are never knowledge. `Walk` already skipped
+  them, and reads now match. A vault that keeps sources in a hidden dir
+  (such as `.raw/`) reads them with its own tools, not vaulty.
+- **Outside `dirs` is out.** Root-level files like `hot.md` or `README.md`
+  are not content unless `dirs` includes `.`. Before this, path mode read
+  any file under the root.
+- **`exclude` is part of the boundary.** Excluded means "not content",
+  for reads as well as scans.
+- **Non-markdown is out.** `timeline read wiki/data.txt` is refused.
 
 ---
 
@@ -346,7 +394,8 @@ for this; it points at the main checkout.
 
 - missing dirs are skipped;
 - directories whose name starts with `.` are skipped;
-- paths matching `exclude` are skipped.
+- only vault content (§3.5) is returned: hidden files, `exclude` matches,
+  and symlinks whose target is not content are skipped.
 
 ---
 

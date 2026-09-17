@@ -7,7 +7,6 @@ package page
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -146,13 +145,13 @@ func FirstH1(d *doc.Doc) string {
 var indexLineRe = regexp.MustCompile(`^- \[\[([^\]]+)\]\] — (.+)$`)
 var trailingDateParenRe = regexp.MustCompile(`\s*\([^()]*\d{4}-\d{2}-\d{2}[^()]*\)\s*$`)
 
-// LoadIndex reads the vault-relative index file (config find.index) under
-// root and returns a name -> summary map. A missing file is skipped
+// LoadIndex reads the index file (config find.index, already resolved via
+// vault.ConfigFile) and returns a name -> summary map. A missing file is skipped
 // silently; lines that don't match the convention are ignored, never an
 // error.
-func LoadIndex(root, indexPath string) map[string]string {
+func LoadIndex(indexFile string) map[string]string {
 	out := map[string]string{}
-	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(indexPath)))
+	b, err := os.ReadFile(indexFile)
 	if err != nil {
 		return out
 	}

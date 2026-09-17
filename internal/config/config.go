@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -189,6 +191,11 @@ func (c *Config) Validate() error {
 	if len(c.Dirs) == 0 {
 		return errors.New("dirs must not be empty")
 	}
+	for _, d := range c.Dirs {
+		if !SafeRel(strings.TrimSuffix(d, "/"), false) {
+			return fmt.Errorf("dirs: %q must be a relative path inside the vault with no hidden (\".\"-prefixed) segment", d)
+		}
+	}
 	if !strings.HasPrefix(c.Timeline.Heading, "#") {
 		return fmt.Errorf("timeline.heading %q must be a markdown heading", c.Timeline.Heading)
 	}
@@ -211,6 +218,11 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Find.Index) == "" {
 		return errors.New("find.index must not be empty")
+	}
+	for key, p := range map[string]string{"log.path": c.Log.Path, "find.index": c.Find.Index, "lint.baseline_path": c.Lint.BaselinePath} {
+		if !SafeRel(p, true) {
+			return fmt.Errorf("%s: %q must be a relative path inside the vault with no hidden (\".\"-prefixed) directory", key, p)
+		}
 	}
 	if len(c.Search.Analyzers) == 0 {
 		return errors.New("search.analyzers must not be empty")
@@ -245,4 +257,26 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// safeRel mirrors vault.SafeRel (config cannot import vault): a clean,
+// relative slash path below the root with no hidden segment; with
+// hiddenBase the file name itself may be hidden.
+func SafeRel(rel string, hiddenBase bool) bool {
+	if rel == "." {
+		return !hiddenBase
+	}
+	if rel == "" || path.IsAbs(rel) || filepath.IsAbs(rel) || strings.Contains(rel, "\\") || path.Clean(rel) != rel {
+		return false
+	}
+	segs := strings.Split(rel, "/")
+	for i, seg := range segs {
+		if seg == ".." {
+			return false
+		}
+		if strings.HasPrefix(seg, ".") && !(hiddenBase && i == len(segs)-1) {
+			return false
+		}
+	}
+	return true
 }

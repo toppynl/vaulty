@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,7 +21,10 @@ func (a *app) runTimelineRead(o readOpts, pageArg string) error {
 	if err != nil {
 		return &ExitError{Code: ExitUsage, Err: err}
 	}
-	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	full, err := v.ContentFile(rel)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
+	}
 	src, err := os.ReadFile(full)
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
