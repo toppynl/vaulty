@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/toppynl/vaulty/compare/v0.1.0...v0.2.0) (2026-09-17)
+
+
+### Features
+
+* configurable find/search fields and find --where ([#14](https://github.com/toppynl/vaulty/issues/14)) ([6070cbb](https://github.com/toppynl/vaulty/commit/6070cbb47f8f976efd0978d5c4f87aecbf0a47d7))
+
+
+### Bug Fixes
+
+* allowlist vault content so .git and other non-content is unreachable ([#13](https://github.com/toppynl/vaulty/issues/13)) ([2d3bf81](https://github.com/toppynl/vaulty/commit/2d3bf817f41593076c7b95a4e4a36ee1e5cfd840))
+* reject single-dash flag typos in search and find ([#12](https://github.com/toppynl/vaulty/issues/12)) ([7b75a01](https://github.com/toppynl/vaulty/commit/7b75a014a25569eed9de836c3ed6181c5fcdd64b))
+
 ## 0.1.0 (2026-09-17)
 
 
