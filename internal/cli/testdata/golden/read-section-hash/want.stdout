@@ -1,0 +1,10 @@
+{
+  "path": "wiki/b.md",
+  "section": {
+    "line": 18,
+    "heading": "Usage",
+    "text": "## Usage\n\nUsage line one.",
+    "hash": "b0a33d7a8ced"
+  },
+  "diags": null
+}

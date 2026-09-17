@@ -11,6 +11,8 @@ import (
 
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/doc"
+	"github.com/toppynl/vaulty/internal/name"
+	"github.com/toppynl/vaulty/internal/section"
 	"github.com/toppynl/vaulty/internal/timeline"
 )
 
@@ -41,7 +43,7 @@ func (a *app) newReadCmd() *cobra.Command {
 	cmd.Flags().IntVar(&o.last, "last", 0, "only the last N entries (implies --timeline)")
 	cmd.Flags().BoolVar(&o.frontmatter, "frontmatter", false, "also print the frontmatter block first")
 	cmd.Flags().BoolVar(&o.headings, "headings", false, "list section headings with line number, line count and byte count instead of printing content")
-	cmd.Flags().StringVar(&o.section, "section", "", "print only this section (a heading's text, from the heading to the next heading of equal-or-higher level or EOF)")
+	cmd.Flags().StringVar(&o.section, "section", "", "print only this section (a heading's text, from the heading to the next heading of equal-or-higher level, the Timeline divider or EOF); its hash goes to stderr (for write --if-hash)")
 	cmd.Flags().IntVar(&o.maxBytes, "max-bytes", 0, "truncate the printed content to N bytes, with a marker noting how much was cut")
 	return cmd
 }
@@ -96,14 +98,14 @@ func (a *app) runRead(o readOpts, pageArg string) error {
 		return a.renderHeadings(rel, d, page)
 	}
 
-	var section *doc.Heading
+	var sec *doc.Heading
 	if o.section != "" {
 		hs := doc.Headings(d)
 		h, ok := findSection(hs, o.section)
 		if !ok {
 			return &ExitError{Code: ExitUsage, Err: sectionNotFoundError(hs, o.section)}
 		}
-		section = &h
+		sec = &h
 	}
 
 	timelineMode := o.timeline || o.since != "" || o.last != 0
@@ -117,9 +119,10 @@ func (a *app) runRead(o readOpts, pageArg string) error {
 			out.Frontmatter = string(d.Src[d.Frontmatter.Start:d.Frontmatter.End])
 		}
 		switch {
-		case section != nil:
-			text, trunc := maybeTruncate(sectionText(d, *section), o)
-			out.Section = &readSectionJSON{Line: section.Line, Heading: section.Text, Text: text}
+		case sec != nil:
+			full := sectionText(page, *sec)
+			text, trunc := maybeTruncate(full, o)
+			out.Section = &readSectionJSON{Line: sec.Line, Heading: sec.Text, Text: text, Hash: section.Hash(full)}
 			out.Truncated = trunc
 		case timelineMode:
 			for _, e := range entries {
@@ -145,7 +148,7 @@ func (a *app) runRead(o readOpts, pageArg string) error {
 		a.stdout.Write(d.Src[d.Frontmatter.Start:d.Frontmatter.End])
 	}
 
-	if timelineMode && section == nil && len(entries) == 0 {
+	if timelineMode && sec == nil && len(entries) == 0 {
 		// DESIGN.md §7: a page (or filtered range) with no Timeline entries
 		// prints nothing, unlike the default/section modes which always
 		// print at least a blank line.
@@ -154,8 +157,8 @@ func (a *app) runRead(o readOpts, pageArg string) error {
 
 	var content string
 	switch {
-	case section != nil:
-		content = sectionText(d, *section)
+	case sec != nil:
+		content = sectionText(page, *sec)
 	case timelineMode:
 		var b strings.Builder
 		for _, e := range entries {
@@ -174,6 +177,11 @@ func (a *app) runRead(o readOpts, pageArg string) error {
 	if trunc != nil {
 		fmt.Fprintf(a.stdout, "[... %d bytes / %d lines truncated ...]\n", trunc.Bytes, trunc.Lines)
 	}
+	if sec != nil {
+		// On stderr so stdout stays exactly the section text; the hash is
+		// over the untruncated text, for `vaulty write --if-hash`.
+		fmt.Fprintf(a.stderr, "%s: section hash %s\n", name.Binary, section.Hash(content))
+	}
 	return nil
 }
 
@@ -184,7 +192,8 @@ func (a *app) renderHeadings(rel string, d *doc.Doc, page *timeline.Page) error 
 	if a.flags.json {
 		out := headingsJSON{Path: rel, Diags: page.AllDiags()}
 		for _, h := range hs {
-			out.Headings = append(out.Headings, headingJSON{Line: h.Line, Level: h.Level, Text: h.Text, Lines: h.Lines(d), Bytes: h.Bytes()})
+			span, _ := section.Region(d, page, h)
+			out.Headings = append(out.Headings, headingJSON{Line: h.Line, Level: h.Level, Text: h.Text, Lines: h.Lines(d), Bytes: h.Bytes(), Hash: section.Hash(section.Text(d, span))})
 		}
 		if out.Headings == nil {
 			out.Headings = []headingJSON{}
@@ -258,9 +267,11 @@ func quoteJoin(ss []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// sectionText is the section's bytes with blank leading/trailing lines trimmed.
-func sectionText(d *doc.Doc, h doc.Heading) string {
-	return trimBlankEdges(string(d.Src[h.Span.Start:h.Span.End]))
+// sectionText is the section's region text (section.Region: clamped to
+// compiled truth, blank edge lines trimmed) — what `write` hashes too.
+func sectionText(p *timeline.Page, h doc.Heading) string {
+	span, _ := section.Region(p.Doc, p, h)
+	return section.Text(p.Doc, span)
 }
 
 type truncatedJSON struct {
@@ -322,6 +333,7 @@ type readSectionJSON struct {
 	Line    int    `json:"line"`
 	Heading string `json:"heading"`
 	Text    string `json:"text"`
+	Hash    string `json:"hash"`
 }
 
 type headingsJSON struct {
@@ -336,6 +348,7 @@ type headingJSON struct {
 	Text  string `json:"text"`
 	Lines int    `json:"lines"`
 	Bytes int    `json:"bytes"`
+	Hash  string `json:"hash"`
 }
 
 func collectEntries(p *timeline.Page) []timeline.Entry {
