@@ -1,0 +1,27 @@
+{
+  "path": "wiki/a.md",
+  "frontmatter": {
+    "aliases": [
+      "persona"
+    ],
+    "links": [
+      "[[stocky-oms]]",
+      "[[zo-geregeld]]"
+    ],
+    "owner": "[[peep]]",
+    "related": [
+      "[[peep]]",
+      "[[me-template]]"
+    ],
+    "repos": [
+      "/var/www/lib/vaulty — git@github.com:toppynl/vaulty.git"
+    ],
+    "status": "developing",
+    "tags": [
+      "vault-tooling",
+      "cli"
+    ],
+    "title": "vaulty",
+    "updated": "2026-09-01"
+  }
+}
