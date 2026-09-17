@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/toppynl/vaulty/compare/v0.4.0...v0.5.0) (2026-09-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* `vaulty timeline read` is now `vaulty read` and `vaulty timeline lint` is now `vaulty lint`; the old names are removed.
+
+### Features
+
+* read, lint, write and frontmatter commands ([#20](https://github.com/toppynl/vaulty/issues/20)) ([18d04d7](https://github.com/toppynl/vaulty/commit/18d04d7b3ef4a2b5fdf3ecb9cdec16d9e589109c))
+
 ## [0.4.0](https://github.com/toppynl/vaulty/compare/v0.3.0...v0.4.0) (2026-09-17)
 
 
