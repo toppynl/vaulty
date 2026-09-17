@@ -39,3 +39,9 @@ lint:
 
 log:
   path: log.md                  # `vaulty log append|last|lint` target, relative to the root
+
+find:
+  exclude: []                   # glob list, same semantics as top-level `exclude`;
+                                 # hides matching pages from `find` by default; --all ignores it
+  index: index.md               # vault-relative path `find` reads index summaries from;
+                                 # a missing file is skipped silently

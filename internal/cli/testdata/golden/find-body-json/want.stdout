@@ -1,0 +1,35 @@
+{
+  "terms": [
+    "bgh",
+    "widget"
+  ],
+  "results": [
+    {
+      "path": "wiki/systems/bgh-system.md",
+      "type": "",
+      "title": "",
+      "summary": "",
+      "score": 50,
+      "matched": [
+        "slug"
+      ]
+    },
+    {
+      "path": "wiki/systems/other-thing.md",
+      "type": "system",
+      "title": "Other Thing",
+      "summary": "",
+      "score": 5,
+      "matched": [
+        "body"
+      ],
+      "body": [
+        {
+          "line": 8,
+          "text": "The old widget system needs review."
+        }
+      ]
+    }
+  ],
+  "total": 2
+}

@@ -133,6 +133,7 @@ vaulty [--vault DIR] [--json]
 │   ├── append <op> <title> [--body TEXT] [--date YYYY-MM-DD]
 │   ├── last   [-n|--n N] [--op OP] [--since DATE]
 │   └── lint
+├── find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--all] [--json]
 ├── config print                     (step 1: effective config + root + config path)
 └── version / --version
 ```
@@ -146,7 +147,7 @@ take their names for anything else:
 | `lint` | Umbrella: runs `timeline lint` plus dead links, orphans, frontmatter schema, hot.md date/size checks |
 | `migrate timeline-asc` | Port of `timeline-asc.mjs` on top of `SortAscending` + `safety.Verify{PreserveBlankCount}` |
 | `dream extract` | Dream-routine extraction |
-| `search`, `backlinks` | Search and backlink queries |
+| `search`, `backlinks` | Ranked full-text/semantic search and backlink queries — distinct from `find` (§18), which is field-weighted discovery over slug/title/aliases/tags/index/H1(+body), not a text-search ranker |
 
 `timeline lint` hosts the two page checks (PG001, PG002) because both are
 defined relative to the Timeline divider. The later umbrella `vaulty lint`
@@ -236,6 +237,13 @@ lint:
   severity: {}             # e.g. {TL006: error, TL008: off}
   baseline_path: .vaulty-baseline.json  # ratchet file (§6.1a), relative to the vault root
   overrides: []            # per-path severity/ratchet exemptions (§6.1a)
+log:
+  path: log.md             # `log append|last|lint` target, relative to the root
+find:
+  exclude: []              # glob list, same semantics as top-level `exclude` (§4.3);
+                           # hides matching pages from `find` by default; --all ignores it
+  index: index.md          # vault-relative path `find` reads index summaries from;
+                           # a missing file is skipped silently (§18)
 ```
 
 `lint.overrides` is a list of glob-scoped exemptions, layered on top of
@@ -1887,3 +1895,127 @@ out-of-order dates itself, §17.3) while `lint`'s job is exactly the
 opposite: surface every finding as the primary result, for a periodic
 vault-health pass (alongside `timeline lint`) rather than every `log
 last` call.
+
+## 18. `vaulty find <term> [<term>...]`
+
+Replaces raw `grep -r`/`find` as the LLM reader agent's discovery step over
+the vault: term(s) in, ranked vault-relative page paths out, ready to pass
+to `vaulty timeline read`. Implemented in `internal/find` (scoring, pure of
+any CLI concerns) plus `internal/cli/find.go` (command tree + rendering),
+mirroring the `timeline`/`log` package split.
+
+### 18.1 Scope and normalization
+
+Scope is `vault.Walk()` (`config.dirs` + top-level `exclude`, §4.3), minus
+`find.exclude` (a second glob list, same semantics, meant for pages that
+are real vault content but shouldn't surface as discovery hits, e.g. a
+superseded `archive/` layer) — `--all` ignores `find.exclude` only, not
+`exclude` (that scoping is `vault.Walk()`'s own and always applies).
+
+Matching normalizes both the term and every candidate field the same way:
+lowercase, then collapse runs of `-`, `_` and whitespace to a single space.
+This is plain substring matching (no regex), so `po agent`, `po-agent` and
+`po_agent` all become `po agent` and match each other.
+
+### 18.2 Fields, weights and per-term scoring
+
+One named table (`internal/find/find.go`, the `weight*` constants):
+
+| Field | Exact | Substring |
+|---|---|---|
+| slug (basename without `.md`) | 100 | 50 |
+| frontmatter `title` | 40 | 30 |
+| any frontmatter `aliases` entry | 40 | 30 |
+| frontmatter `tags` entry | 25 | 25 |
+| index summary (§18.3) | 20 | 20 |
+| first H1 heading text | 20 | 20 |
+| compiled-truth body line (`--body` only, §18.4) | 5 | 5 |
+
+Terms are OR'ed. For each term independently, the page's *single*
+best-matching field counts (the highest weight; ties break in the table's
+row order above — e.g. an exact `title` and an exact `alias` both score
+40, and `title` wins the tie only for the purpose of which field name is
+reported, not the score). The page's total score is the sum of each
+term's best-field weight (0 for a term that matches nothing). A page with
+a total score of 0 (no term matched anything) is not a result at all.
+
+Body is deliberately checked last and only as a fallback: a term already
+satisfied by a higher-weight field never triggers a body scan for that
+term, which keeps `--body` cheap on the common case (most terms hit
+metadata) even though it means whichever body match a page needed is
+what's actually reported (§18.4) — a term that also happens to appear in
+the body of a page it already matched by slug never shows a body
+snippet, since body never had to run for that term.
+
+`--type TYPE` filters on frontmatter `type` (exact match) before scoring.
+`type` comes from frontmatter only; a page with no frontmatter, or
+frontmatter that fails to parse, has `type == ""` and is excluded by any
+`--type` filter (but still eligible for every other flag combination).
+
+### 18.3 Frontmatter and the index
+
+Frontmatter is parsed leniently (`yaml.Unmarshal`, no `KnownFields`): a
+page with broken frontmatter YAML still matches on slug, H1 and body — it
+never fails the command, and its `type`/`title`/`aliases`/`tags` are just
+empty. `aliases`/`tags` accept either a YAML list or a single bare scalar.
+
+The index summary comes from `find.index` (default `index.md`, the
+vault's own catalog convention: `- [[name]] — summary (YYYY-MM-DD)` lines).
+`find` reads it once per invocation, maps `name -> summary` (the wikilink
+normalization — cut at the first `|` or `#` — matches `vault.Resolve`,
+§3.3), and looks up each page by `basename == name`. A missing index file
+is skipped silently (empty map, not an error); a line that doesn't match
+the convention is ignored. Sharded child pages
+(`wiki/<type>/<x>/<x>-<part>.md`) are never index entries by convention and
+so never get an index-summary match — they still match on their own
+slug/frontmatter/H1/body.
+
+### 18.4 `--body`
+
+Scans the page's compiled-truth span (`timeline.Parse`'s `CompiledTruth`,
+§5.2 — the same span `timeline read`'s default mode prints, i.e. above the
+Timeline divider, frontmatter excluded) line by line, for whichever terms
+didn't already match a higher-weight field (§18.2). Up to 3 matching lines
+are recorded per page across all such terms combined (not 3 per term) —
+enough to show why a body-only hit exists without flooding the output —
+as `{line, text}`, `text` trimmed and capped at 120 bytes, backed off to
+the nearest UTF-8 rune boundary so a multi-byte rune is never split.
+
+### 18.5 Output
+
+`--limit` (default 10, `0` = unlimited) applies after sorting by score
+descending, then path ascending. `total` (JSON) / the pre-limit match
+count is always the full count, independent of `--limit`.
+
+Human mode, one tab-separated line per result on stdout: `path\ttype\t
+score\tmatched-fields\tsummary-or-title`, where `matched-fields` is a
+comma list of the field names that contributed to the score (deduplicated,
+first-contributed order — e.g. `slug,alias,index`), and the last column is
+the index summary when the page has one, else the frontmatter title, else
+empty. With `--body`, each result is followed by one indented line per
+recorded body match: `  L<n>: <snippet>`.
+
+No terms given, or every term blank after normalization, exits 2
+(`vaulty: find: no search terms given`) — a caller mistake, not "found
+nothing". No pages match (valid terms, zero results): nothing on stdout,
+`vaulty: no pages match` on stderr, **exit 0** — this is a normal, useful
+answer for a discovery tool, not a usage error.
+
+`--json`:
+
+```json
+{"terms":["po agent"],
+ "results":[{"path":"wiki/initiatives/po-agent.md","type":"initiative",
+   "title":"PO Agent","summary":"knowledge base for the PO agent",
+   "score":100,"matched":["slug"],
+   "body":[{"line":12,"text":"..."}]}],
+ "total":1}
+```
+
+`results` is always an array, even when empty (never `null` — unlike most
+other `--json` array fields elsewhere in this tool, because an empty
+result set is find's normal "nothing found" answer, not an edge case a
+JSON consumer should have to special-case with an extra nil check).
+`body` is present only on a result that actually recorded a body match
+(§18.4); it's absent (not an empty array) on every other result, including
+when `--body` was passed but that page matched entirely through metadata.
