@@ -56,6 +56,9 @@ type Query struct {
 // Positive reports whether the query has any ranked terms.
 func (q *Query) Positive() bool { return len(q.Clauses) > 0 }
 
+// fuzzyDistRe matches a fuzzy term suffix: "~" optionally followed by digits.
+var fuzzyDistRe = regexp.MustCompile(`~(\d*)$`)
+
 // filterKeyRe is a field:value key: a letter or "_" first, then letters,
 // digits, "_", "-", ".".
 var filterKeyRe = regexp.MustCompile(`^[\p{L}_][\p{L}\p{N}_.-]*$`)
@@ -178,8 +181,12 @@ func parseTerm(tok string) (Clause, error) {
 			return Clause{}, fmt.Errorf("%w: %q needs a prefix before \"*\"", ErrQuery, tok)
 		}
 		return Clause{Kind: kindPrefix, Text: stem}, nil
-	case strings.HasSuffix(tok, "~"), strings.HasSuffix(tok, "~1"), strings.HasSuffix(tok, "~2"):
-		stem, dist, _ := strings.Cut(tok, "~")
+	case fuzzyDistRe.MatchString(tok):
+		m := fuzzyDistRe.FindStringSubmatch(tok)
+		stem, dist := tok[:len(tok)-len(m[0])], m[1]
+		if dist != "" && dist != "1" && dist != "2" {
+			return Clause{}, fmt.Errorf("%w: %q: fuzzy distance must be 1 or 2", ErrQuery, tok)
+		}
 		if stem == "" {
 			return Clause{}, fmt.Errorf("%w: %q needs a term before \"~\"", ErrQuery, tok)
 		}
@@ -211,8 +218,11 @@ func analyzeTerms(a analysis.Analyzer, text string) []string {
 }
 
 // resolve tokenizes every clause with the raw analyzer and drops clauses
-// with nothing searchable left (e.g. pure punctuation).
-func (q *Query) resolve(raw analysis.Analyzer) {
+// with nothing searchable left (e.g. pure punctuation). A query whose search
+// terms all resolve to nothing is an ErrQuery, even when filters are present:
+// the caller asked for terms, and silently listing every page would be wrong.
+func (q *Query) resolve(raw analysis.Analyzer) error {
+	hadTerms := len(q.Clauses)+len(q.Negated) > 0
 	fix := func(cs []Clause) []Clause {
 		var out []Clause
 		for _, c := range cs {
@@ -225,6 +235,10 @@ func (q *Query) resolve(raw analysis.Analyzer) {
 	}
 	q.Clauses = fix(q.Clauses)
 	q.Negated = fix(q.Negated)
+	if hadTerms && len(q.Clauses)+len(q.Negated) == 0 {
+		return fmt.Errorf("%w: %q has no searchable terms", ErrQuery, q.Raw)
+	}
+	return nil
 }
 
 // clauseQuery builds one clause as a disjunction over every searched field.

@@ -2129,7 +2129,7 @@ string:
 |---|---|
 | `word` | Plain term. Analyzed with every configured analyzer plus the raw analyzer; terms are OR'ed and pages matching more of them rank higher (bleve's coord factor). |
 | `"exact phrase"` | Words in this order, against the unstemmed raw sub-fields. |
-| `term~` | Fuzzy, against the raw sub-fields: edit distance 1 for terms under 6 runes, 2 from 6 runes on. `term~1`/`term~2` pin the distance. |
+| `term~` | Fuzzy, against the raw sub-fields: edit distance 1 for terms under 6 runes, 2 from 6 runes on. `term~1`/`term~2` pin the distance; any other `~N` is a query error. |
 | `term*` | Prefix, against the raw sub-fields. |
 | `-term`, `-"phrase"`, `-term~`, `-term*` | Exclude pages matching it (in the searched fields). |
 | `key:value`, `key:"quoted value"` | Exact frontmatter filter on any key (§19.2). `tag:` is an alias for `tags:`. AND'ed with every other filter. |
@@ -2139,7 +2139,9 @@ A `key:value` token is a filter when `key` starts with a letter or `_` and
 continues with letters, digits, `_`, `-`, `.`; anything else containing a
 colon is an ordinary term. A fuzzy/prefix/phrase stem that the raw analyzer
 splits into several tokens (`po-agent~`) applies to each token, OR'ed.
-Terms with nothing searchable in them (pure punctuation) are dropped.
+Terms with nothing searchable in them (pure punctuation) are dropped; a
+query whose terms all drop out (`vaulty search '!!!'`) is a query error
+(exit 2), even alongside filters.
 
 `--type T` is `--where type=T`. `--where key=value` (repeatable) splits on the
 first `=` only, so values may contain `=` and `/`
@@ -2224,19 +2226,24 @@ Every call (unless `--no-cache`):
    manifest entry is refreshed. Different: re-index the page. Manifest pages
    no longer in the corpus (deleted, excluded, unreadable) are deleted from
    the index. All changes go in one bleve batch.
-4. Write the manifest atomically (temp file in the cache dir, fsync, rename)
-   only after the index update succeeded — a crash in between leaves the old
-   manifest, and the next call re-applies the same idempotent updates.
+4. If anything changed, write the manifest atomically (temp file in the
+   cache dir, fsync, rename), only after the index update succeeded — a
+   crash in between leaves the old manifest, and the next call re-applies
+   the same idempotent updates. A manifest write that fails is ignored for
+   the same reason: the index is current and is used for this call. A call
+   that changes nothing writes nothing.
 5. Query, release the lock.
 
 Index-format changes bump `FormatVersion` (`internal/search/mapping.go`);
 format 1 is the initial schema.
 
 **Fallback.** When the cache can't be used — no user cache dir, the directory
-can't be created, the lock can't be taken in 2 s, rebuilding or updating
-fails, or the query against the cached index fails (the index is then
-deleted so the next call rebuilds) — the call indexes the corpus in memory
-(the same scorch engine and scoring) and prints exactly one stderr line:
+can't be created, the lock can't be taken in 2 s, the old manifest can't be
+removed before a rebuild, rebuilding or updating the index fails, or the
+query against the cached index fails — the call indexes the corpus in memory
+(the same scorch engine and scoring) and prints exactly one stderr line (an index that failed to build, update or
+query is deleted so the next call rebuilds; one that was merely not
+reachable, e.g. a read-only cache dir, is kept):
 `vaulty: search cache unavailable (<reason>), indexing in memory`. A cache
 problem never fails the command. `--no-cache` always indexes in memory,
 silently, and never touches the cache (golden tests use it). `--rebuild`
@@ -2249,10 +2256,10 @@ call with nothing changed about 10 ms; in-memory about 0.8 s and 135 MB RSS.
 (the query is ignored), one `key: value` per line (or `--json`):
 `cache` (the vault's cache dir), `pages`, `index_bytes`, `last_update`
 (RFC 3339, last time the index content changed, or `never`),
-`last_check_updated` (pages indexed or deleted by the most recent freshness
-check; the page count after a full rebuild), `last_update_kind` (`full`,
-`incremental`, or `none` when the last check found nothing to do), and
-`full_rebuilds`. With no cached index yet, `pages: 0` and
+`last_check_updated` (pages indexed or deleted by the most recent update
+that changed the index; the page count after a full rebuild),
+`last_update_kind` (`full` or `incremental`), and `full_rebuilds`. Calls that
+find nothing to do don't change these. With no cached index yet, `pages: 0` and
 `last_update_kind: none (no cached index yet)`.
 
 ### 19.4 Output and exit codes
@@ -2295,5 +2302,5 @@ decimals.
 | Exit | When |
 |---|---|
 | 0 | Results printed, or no hits (nothing on stdout, `vaulty: 0 hits (type counts: none)` on stderr) |
-| 2 | Empty query (no terms, `key:value`, `--where` or `--type`), unparseable query (unterminated quote, lone `-`, `*`/`~` without a term, `key:` without a value), malformed `--where`, invalid config (including unknown `search.analyzers`) |
+| 2 | Empty query (no terms, `key:value`, `--where` or `--type`), unparseable query (unterminated quote, lone `-`, `*`/`~` without a term, `~N` other than 1/2, `key:` without a value, terms with nothing searchable), malformed `--where`, invalid config (including unknown `search.analyzers`) |
 | 4 | The corpus can't be walked, or the in-memory index can't be built |

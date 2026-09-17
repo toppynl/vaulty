@@ -29,11 +29,19 @@ const (
 	indexBatchSize  = 200
 	updateKindFull  = "full"
 	updateKindIncr  = "incremental"
-	updateKindNone  = "none"
 	boltOpenTimeout = "2s"
 )
 
 var errLockTimeout = fmt.Errorf("index locked by another process for more than %s", lockTimeout)
+
+// keepIndexError marks a failure that makes the cache unusable for this call
+// without saying anything about the index itself (e.g. the manifest can't be
+// removed in a read-only cache dir): fall back to memory, but don't delete
+// a possibly valid index.
+type keepIndexError struct{ err error }
+
+func (e keepIndexError) Error() string { return e.err.Error() }
+func (e keepIndexError) Unwrap() error { return e.err }
 
 // Manifest records what the cached index holds, so each call can bring it
 // up to date incrementally (DESIGN.md §19.3).
@@ -43,8 +51,8 @@ type Manifest struct {
 	ConfigHash   string           `json:"config_hash"`
 	Pages        map[string]Entry `json:"pages"`
 	LastUpdate   time.Time        `json:"last_update"`
-	LastChecked  int              `json:"last_check_updated"` // pages indexed or deleted by the most recent freshness check
-	LastKind     string           `json:"last_update_kind"`   // full | incremental | none
+	LastChecked  int              `json:"last_check_updated"` // pages indexed or deleted by the most recent update (page count after a full rebuild)
+	LastKind     string           `json:"last_update_kind"`   // full | incremental
 	FullRebuilds int              `json:"full_rebuilds"`
 }
 
@@ -184,7 +192,12 @@ func openCached(v *vault.Vault, corp *corpus, im *mapping.IndexMappingImpl, forc
 			err = fmt.Errorf("index panic: %v", r)
 		}
 		if err != nil {
-			ci.discard()
+			var keep keepIndexError
+			if errors.As(err, &keep) {
+				ci.close()
+			} else {
+				ci.discard()
+			}
 			ci = nil
 		}
 	}()
@@ -213,7 +226,7 @@ func openCached(v *vault.Vault, corp *corpus, im *mapping.IndexMappingImpl, forc
 			ci.idx = nil
 		}
 		if err := removeIfExists(filepath.Join(dir, manifestName)); err != nil {
-			return ci, err
+			return ci, keepIndexError{err}
 		}
 		if err := os.RemoveAll(idxPath); err != nil {
 			return ci, err
@@ -234,7 +247,10 @@ func openCached(v *vault.Vault, corp *corpus, im *mapping.IndexMappingImpl, forc
 		if old != nil {
 			m.FullRebuilds = old.FullRebuilds + 1
 		}
-		return ci, writeManifest(dir, m)
+		// The index is complete; a manifest that can't be written only
+		// means the next call rebuilds again. Use the index regardless.
+		_ = writeManifest(dir, m)
+		return ci, nil
 	}
 
 	return ci, updateIncremental(ci, corp, old)
@@ -329,10 +345,13 @@ func updateIncremental(ci *cachedIndex, corp *corpus, old *Manifest) error {
 		m.LastUpdate = time.Now().UTC()
 		m.LastKind = updateKindIncr
 	} else {
-		m.LastKind = updateKindNone
+		m.LastKind = old.LastKind
+		m.LastChecked = old.LastChecked
 	}
-	if dirty || changed != old.LastChecked || m.LastKind != old.LastKind {
-		return writeManifest(ci.dir, &m)
+	if dirty {
+		// Best effort: the index is already updated, and a stale manifest
+		// only makes the next call re-apply the same idempotent updates.
+		_ = writeManifest(ci.dir, &m)
 	}
 	return nil
 }

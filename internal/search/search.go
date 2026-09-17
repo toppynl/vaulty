@@ -127,7 +127,9 @@ func Run(v *vault.Vault, q *Query, opts Options) (*Response, error) {
 		return nil, fmt.Errorf("search.analyzers: %w", err)
 	}
 	rawAn := im.AnalyzerNamed(rawAnalyzer)
-	q.resolve(rawAn)
+	if err := q.resolve(rawAn); err != nil {
+		return nil, err
+	}
 
 	corp, err := loadCorpus(v)
 	if err != nil {
