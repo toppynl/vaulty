@@ -20,9 +20,13 @@ checksum:
   name_template: checksums.txt
 
 changelog:
-  use: git
+  disable: true
 
 release:
   github:
     owner: toppynl
     name: vaulty
+  # release-please already created the GitHub Release (tag + changelog
+  # notes) before this runs; goreleaser only needs to attach the archives
+  # and checksums.txt to it, not overwrite the notes.
+  mode: keep-existing

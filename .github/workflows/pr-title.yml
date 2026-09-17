@@ -1,0 +1,18 @@
+name: pr-title
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  lint-pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      # Merges here are squash-merged using the PR title as the commit
+      # subject, so the title (not individual commits) is what
+      # release-please reads — it must be a conventional-commit subject.
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

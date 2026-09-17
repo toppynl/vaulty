@@ -12,27 +12,16 @@ Local machine:
 scripts/install.sh
 ```
 
-Cloud / CI bootstrap (needs `gh` + a token with access to the private repo),
-placed after any `gh` auth setup:
+Cloud / CI bootstrap — no `gh`, no token, no Go toolchain needed (the repo
+is public and `install.sh` downloads a release binary directly):
 
 ```bash
 if ! command -v vaulty >/dev/null 2>&1; then
-  arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; esac
-  if command -v gh >/dev/null 2>&1 && [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
-    mkdir -p "$HOME/.local/bin" \
-      && gh release download --repo toppynl/vaulty --pattern "vaulty_linux_${arch}.tar.gz" -O - \
-         | tar -xz -C "$HOME/.local/bin" vaulty \
-      && export PATH="$HOME/.local/bin:$PATH" && echo "vaulty: installed" \
-      || { echo "vaulty: install FAILED"; fail=1; }
-  elif command -v go >/dev/null 2>&1; then
-    GOPRIVATE=github.com/toppynl go install github.com/toppynl/vaulty/cmd/vaulty@latest >/dev/null 2>&1 \
-      && export PATH="$PATH:$(go env GOPATH)/bin" && echo "vaulty: installed via go" \
-      || { echo "vaulty: install FAILED"; fail=1; }
-  else
-    echo "vaulty: no gh+token or go, skipping"; fail=1
-  fi
+  curl -fsSL https://raw.githubusercontent.com/toppynl/vaulty/main/scripts/install.sh | bash \
+    && export PATH="$HOME/.local/bin:$PATH" && echo "vaulty: installed" \
+    || { echo "vaulty: install FAILED"; fail=1; }
 else
-  echo "vaulty: present ($(vaulty --version 2>/dev/null))"
+  echo "vaulty: present ($(vaulty version 2>/dev/null))"
 fi
 ```
 
