@@ -231,7 +231,7 @@ func (pi *pageInfo) setIndexSummary(s string) {
 }
 
 // compiledTruthLines lazily splits the page's compiled-truth span
-// (DESIGN.md §5.2, the same span `timeline read`'s default mode prints)
+// (DESIGN.md §5.2, the same span `read`'s default mode prints)
 // into 1-based (line, text) pairs, for the --body fallback field.
 func (pi *pageInfo) compiledTruthLines() []bodyLine {
 	if pi.bodyLnd {

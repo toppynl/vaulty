@@ -7,12 +7,46 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/spf13/cobra"
+
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/doc"
 	"github.com/toppynl/vaulty/internal/timeline"
 )
 
-func (a *app) runTimelineRead(o readOpts, pageArg string) error {
+type readOpts struct {
+	timeline    bool
+	since       string
+	last        int
+	frontmatter bool
+	headings    bool
+	section     string
+	maxBytes    int
+	maxBytesSet bool
+}
+
+func (a *app) newReadCmd() *cobra.Command {
+	var o readOpts
+	cmd := &cobra.Command{
+		Use:   "read <page>",
+		Short: "Print compiled truth (default), Timeline entries, headings or one section of a page",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o.maxBytesSet = cmd.Flags().Changed("max-bytes")
+			return a.runRead(o, args[0])
+		},
+	}
+	cmd.Flags().BoolVar(&o.timeline, "timeline", false, "print Timeline entries instead of compiled truth")
+	cmd.Flags().StringVar(&o.since, "since", "", "only entries overlapping YYYY-MM-DD or later (implies --timeline)")
+	cmd.Flags().IntVar(&o.last, "last", 0, "only the last N entries (implies --timeline)")
+	cmd.Flags().BoolVar(&o.frontmatter, "frontmatter", false, "also print the frontmatter block first")
+	cmd.Flags().BoolVar(&o.headings, "headings", false, "list section headings with line number, line count and byte count instead of printing content")
+	cmd.Flags().StringVar(&o.section, "section", "", "print only this section (a heading's text, from the heading to the next heading of equal-or-higher level or EOF)")
+	cmd.Flags().IntVar(&o.maxBytes, "max-bytes", 0, "truncate the printed content to N bytes, with a marker noting how much was cut")
+	return cmd
+}
+
+func (a *app) runRead(o readOpts, pageArg string) error {
 	v, err := a.openVault()
 	if err != nil {
 		return err
@@ -143,7 +177,7 @@ func (a *app) runTimelineRead(o readOpts, pageArg string) error {
 	return nil
 }
 
-// renderHeadings implements `timeline read --headings`: independent of the
+// renderHeadings implements `read --headings`: independent of the
 // default/timeline/section modes, always exits 0 once the page resolved.
 func (a *app) renderHeadings(rel string, d *doc.Doc, page *timeline.Page) error {
 	hs := doc.Headings(d)

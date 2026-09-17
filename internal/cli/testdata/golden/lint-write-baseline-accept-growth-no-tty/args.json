@@ -1,1 +1,1 @@
-["timeline", "lint", "--write-baseline", "--accept-growth"]
+["lint", "--write-baseline", "--accept-growth"]

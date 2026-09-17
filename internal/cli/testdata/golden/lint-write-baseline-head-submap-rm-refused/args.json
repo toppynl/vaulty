@@ -1,1 +1,1 @@
-["--vault", "{{VAULT}}/subvault", "timeline", "lint", "--write-baseline"]
+["--vault", "{{VAULT}}/subvault", "lint", "--write-baseline"]

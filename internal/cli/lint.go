@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/diag"
 	"github.com/toppynl/vaulty/internal/lint"
@@ -18,9 +20,41 @@ import (
 	"github.com/toppynl/vaulty/internal/vault"
 )
 
-func (a *app) runTimelineLint(o lintOpts, args []string) error {
+type lintOpts struct {
+	hook          bool   // read Claude Code PostToolUse JSON from stdin
+	changed       string // git ref; lint files changed vs ref (per-file mode)
+	strict        bool   // warnings also fail
+	warnings      bool   // print warnings in human mode
+	writeBaseline bool   // recompute and write the ratchet baseline (DESIGN.md §6.1a)
+	acceptGrowth  bool   // with --write-baseline: allow raising a page's baselined debt
+	checkBaseline bool   // read-only: refuse if the on-disk baseline grew vs HEAD (pre-commit backstop)
+	staged        bool   // with --check-baseline: compare the staged (index) baseline, not the working copy
+}
+
+func (a *app) newLintCmd() *cobra.Command {
+	var o lintOpts
+	cmd := &cobra.Command{
+		Use:   "lint [paths...]",
+		Short: "Check Timeline format and page hygiene (exit 1 on errors)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.runLint(o, args)
+		},
+	}
+	cmd.Flags().BoolVar(&o.hook, "hook", false, "Claude Code PostToolUse mode: read hook JSON on stdin, exit 2 with findings on stderr")
+	cmd.Flags().StringVar(&o.changed, "changed", "", "lint .md files changed vs this git ref (default ref: main)")
+	cmd.Flags().Lookup("changed").NoOptDefVal = "main"
+	cmd.Flags().BoolVar(&o.strict, "strict", false, "treat warnings as errors")
+	cmd.Flags().BoolVar(&o.warnings, "warnings", false, "also print warnings in human mode")
+	cmd.Flags().BoolVar(&o.writeBaseline, "write-baseline", false, "recompute the TL006/TL008/PG002 ratchet baseline over the whole vault and write it, then exit (shrink only by default; see --accept-growth)")
+	cmd.Flags().BoolVar(&o.acceptGrowth, "accept-growth", false, "with --write-baseline, also accept pages whose debt grew (a human decision — never run by an agent)")
+	cmd.Flags().BoolVar(&o.checkBaseline, "check-baseline", false, "read-only: fail if the on-disk ratchet baseline is higher than the one committed at HEAD (pre-commit backstop; never writes)")
+	cmd.Flags().BoolVar(&o.staged, "staged", false, "with --check-baseline: compare the staged (git index) baseline against HEAD instead of the working copy (use in a pre-commit hook)")
+	return cmd
+}
+
+func (a *app) runLint(o lintOpts, args []string) error {
 	if o.hook {
-		return a.runTimelineLintHook()
+		return a.runLintHook()
 	}
 
 	v, err := a.openVault()
@@ -257,7 +291,7 @@ func reportUnmatchedOverrideGlobs(a *app, files []string, overrides []config.Ove
 // (DESIGN.md §6.1a, Peep's 2026-09-15 decision). Inside a git repo, "old"
 // is always the baseline as committed at HEAD, never the on-disk file:
 // that closes two bypasses of the shrink-only ratchet — `rm
-// .vaulty-baseline.json && vaulty timeline lint --write-baseline` (no old
+// .vaulty-baseline.json && vaulty lint --write-baseline` (no old
 // on disk, but one exists at HEAD) and hand-raising a value on disk before
 // running --write-baseline (the disk file is never consulted as the
 // growth reference). A baseline file that exists at HEAD but is missing
@@ -595,7 +629,7 @@ type hookPayload struct {
 	} `json:"tool_input"`
 }
 
-func (a *app) runTimelineLintHook() error {
+func (a *app) runLintHook() error {
 	data, err := io.ReadAll(a.stdin)
 	if err != nil || len(data) == 0 {
 		return nil

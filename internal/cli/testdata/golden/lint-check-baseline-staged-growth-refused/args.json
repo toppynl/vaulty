@@ -1,1 +1,1 @@
-["timeline", "lint", "--check-baseline", "--staged"]
+["lint", "--check-baseline", "--staged"]

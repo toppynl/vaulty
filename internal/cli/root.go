@@ -324,6 +324,8 @@ func (a *app) newRoot() *cobra.Command {
 		"vault root (default: $"+name.EnvRoot+", else nearest ancestor with "+name.ConfigFile+", else git root)")
 	root.PersistentFlags().BoolVar(&a.flags.json, "json", false, "machine-readable JSON output")
 
+	root.AddCommand(a.newReadCmd())
+	root.AddCommand(a.newLintCmd())
 	root.AddCommand(a.newTimelineCmd())
 	root.AddCommand(a.newLogCmd())
 	root.AddCommand(a.newFindCmd())
@@ -331,7 +333,7 @@ func (a *app) newRoot() *cobra.Command {
 	root.AddCommand(a.newSetupCmd())
 	root.AddCommand(a.newConfigCmd())
 	root.AddCommand(a.newVersionCmd())
-	// Reserved for later units (DESIGN.md §3.1): index, lint, migrate, dream, backlinks.
+	// Reserved for later units (DESIGN.md §3.1): index, migrate, dream, backlinks.
 	return root
 }
 
