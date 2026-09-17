@@ -8,15 +8,15 @@ import (
 	"github.com/toppynl/vaulty/internal/vault"
 )
 
-// TestSearchAllBypassesExclude pins the --all/find.exclude interaction that
-// find-ranking's golden case can only show one side of (a single CLI
-// invocation can't assert "hidden by default" and "shown with --all" at
-// once): a page under a find.exclude glob is dropped by default and
-// restored by Options.All.
-func TestSearchAllBypassesExclude(t *testing.T) {
+// TestSearchOnlyFilter pins the --only interaction that find-ranking's
+// golden case can only show one side of (a single CLI invocation can't
+// assert "found by default" and "hidden with --only" pointed elsewhere at
+// once): a page under wiki/ is found by default and dropped once the
+// caller restricts the search to another directory via --only.
+func TestSearchOnlyFilter(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "archive", "old-thing.md"), "---\ntype: initiative\n---\n\n# Old Thing\n")
-	mustWrite(t, filepath.Join(dir, ".vaulty.yml"), "version: 1\nfind:\n  exclude: [\"archive/**\"]\n")
+	mustWrite(t, filepath.Join(dir, "wiki", "unrelated.md"), "---\ntype: system\n---\n\n# Unrelated\n")
 
 	v, err := vault.Open("", dir)
 	if err != nil {
@@ -29,16 +29,16 @@ func TestSearchAllBypassesExclude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(results) != 0 {
-		t.Errorf("default (no --all): got %d results, want 0 (archive/** excluded); results=%+v", len(results), results)
+	if len(results) != 1 || results[0].Path != "archive/old-thing.md" {
+		t.Errorf("default (no --only): got %+v, want one result archive/old-thing.md", results)
 	}
 
-	results, err = Search(v, terms, Options{All: true})
+	results, err = Search(v, terms, Options{Only: []string{"wiki"}})
 	if err != nil {
-		t.Fatalf("Search --all: %v", err)
+		t.Fatalf("Search --only wiki: %v", err)
 	}
-	if len(results) != 1 || results[0].Path != "archive/old-thing.md" {
-		t.Errorf("--all: got %+v, want one result archive/old-thing.md", results)
+	if len(results) != 0 {
+		t.Errorf("--only wiki: got %d results, want 0 (archive/old-thing.md is outside wiki/**); results=%+v", len(results), results)
 	}
 }
 

@@ -1,5 +1,5 @@
 // Package find implements `vaulty find`: term(s) in, ranked vault-relative
-// page paths out (DESIGN.md §19). It replaces raw grep/find as the LLM
+// page paths out (DESIGN.md §18). It replaces raw grep/find as the LLM
 // reader agent's discovery step over the vault.
 package find
 
@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -21,10 +22,10 @@ import (
 	"github.com/toppynl/vaulty/internal/vault"
 )
 
-// ErrNoTerms is returned when every given term is blank (exit 2, DESIGN.md §19.2).
+// ErrNoTerms is returned when every given term is blank (exit 2, DESIGN.md §18.2).
 var ErrNoTerms = errors.New("no search terms given")
 
-// weights is the single named table of field weights (DESIGN.md §19.1).
+// weights is the single named table of field weights (DESIGN.md §18.1).
 // exact/sub apply to fields with an exact-vs-substring distinction (slug,
 // title, alias); the rest (tag, index, h1, body) have one weight, applied
 // on a substring (Contains) match only.
@@ -44,9 +45,9 @@ const (
 // Options are the `find` flags that affect scoring/scope, beyond the terms
 // themselves.
 type Options struct {
-	Body bool   // scan compiled-truth body text as a fallback field
-	All  bool   // ignore config.Find.Exclude
-	Type string // filter on frontmatter `type` (exact match); "" = no filter
+	Body bool     // scan compiled-truth body text as a fallback field
+	Only []string // raw --only tokens (dir names or globs); empty = whole vault
+	Type string   // filter on frontmatter `type` (exact match); "" = no filter
 }
 
 // BodyMatch is one compiled-truth line a body-fallback term matched.
@@ -75,27 +76,31 @@ func (r Result) SummaryOrTitle() string {
 	return r.Title
 }
 
-// NormalizeTerms lowercases and collapses "-", "_" and whitespace runs to a
-// single space in each term, dropping blanks. Exported so the CLI layer can
-// validate "no terms" (ErrNoTerms) before calling Search, and so JSON output
-// can echo back what was actually matched against.
+// NormalizeTerms tokenizes each term (see tokenize) and rejoins it with
+// single spaces, dropping any term with no tokens at all (e.g. blank, or
+// pure punctuation). Exported so the CLI layer can validate "no terms"
+// (ErrNoTerms) before calling Search, and so JSON output can echo back
+// what was actually matched against.
 func NormalizeTerms(raw []string) []string {
 	var out []string
 	for _, t := range raw {
-		n := normalize(t)
-		if n != "" {
-			out = append(out, n)
+		toks := tokenize(t)
+		if len(toks) == 0 {
+			continue
 		}
+		out = append(out, strings.Join(toks, " "))
 	}
 	return out
 }
 
-// Search scores every page vault.Walk() returns (minus config.Find.Exclude,
-// unless opts.All) against terms (OR'ed; already normalized via
-// NormalizeTerms), sorts by score desc then path asc, and returns every
-// match (the caller applies --limit). total is len(results) before any
-// limiting, i.e. always len(results) here — the CLI slices afterwards so it
-// can report the pre-limit count.
+// Search scores every page vault.Walk() returns — the whole vault (minus
+// the global config.Exclude, already applied by Walk) by default; opts.Only
+// narrows that further via vault.OnlyPatterns/FilterOnly (DESIGN.md §18) —
+// against terms (OR'ed; already normalized via NormalizeTerms), sorts by
+// score desc then path asc, and returns every match (the caller applies
+// --limit). total is len(results) before any limiting, i.e. always
+// len(results) here — the CLI slices afterwards so it can report the
+// pre-limit count.
 func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 	if len(terms) == 0 {
 		return nil, ErrNoTerms
@@ -105,13 +110,16 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !opts.All {
-		files = excludeFind(v.Config.Find.Exclude, files)
-	}
+	files = vault.FilterOnly(files, vault.OnlyPatterns(opts.Only))
 
 	index, err := loadIndex(v)
 	if err != nil {
 		return nil, err
+	}
+
+	termToks := make([][]string, len(terms))
+	for i, t := range terms {
+		termToks[i] = tokenize(t)
 	}
 
 	var results []Result
@@ -122,13 +130,13 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 			continue // best effort: an unreadable file just doesn't match
 		}
 		pi := newPageInfo(rel, src, v.Config.Timeline)
-		pi.indexSummary = index[pi.slug]
+		pi.setIndexSummary(index[pi.slug])
 
 		if opts.Type != "" && pi.fmType != opts.Type {
 			continue
 		}
 
-		score, matched, body := scorePage(pi, terms, opts)
+		score, matched, body := scorePage(pi, termToks, opts)
 		if score == 0 {
 			continue
 		}
@@ -152,33 +160,21 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 	return results, nil
 }
 
-func excludeFind(patterns []string, files []string) []string {
-	if len(patterns) == 0 {
-		return files
-	}
-	var out []string
-	for _, f := range files {
-		if !vault.MatchAny(patterns, f) {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 // ---- per-page metadata -----------------------------------------------
 
 type pageInfo struct {
-	rel          string
-	slug         string // basename without .md, as written (index lookup key)
-	slugNorm     string
-	fmType       string
-	title        string
-	titleNorm    string
-	aliasesNorm  []string
-	tagsNorm     []string
-	h1           string
-	h1Norm       string
-	indexSummary string
+	rel                string
+	slug               string // basename without .md, as written (index lookup key)
+	slugTokens         []string
+	fmType             string
+	title              string
+	titleTokens        []string
+	aliasesTokens      [][]string
+	tagsTokens         [][]string
+	h1                 string
+	h1Tokens           []string
+	indexSummary       string
+	indexSummaryTokens []string
 
 	// body support (lazy: only computed when needed)
 	src     []byte
@@ -195,32 +191,39 @@ type bodyLine struct {
 
 func newPageInfo(rel string, src []byte, tlCfg config.Timeline) *pageInfo {
 	slug := strings.TrimSuffix(path.Base(rel), ".md")
-	pi := &pageInfo{rel: rel, slug: slug, slugNorm: normalize(slug), src: src, tlCfg: tlCfg}
+	pi := &pageInfo{rel: rel, slug: slug, slugTokens: tokenize(slug), src: src, tlCfg: tlCfg}
 	pi.doc = doc.Parse(rel, src)
 
 	fm := parseFrontmatter(pi.doc)
 	pi.fmType = fm.Type
 	pi.title = fm.Title
-	pi.titleNorm = normalize(fm.Title)
+	pi.titleTokens = tokenize(fm.Title)
 	for _, a := range fm.Aliases {
-		if n := normalize(a); n != "" {
-			pi.aliasesNorm = append(pi.aliasesNorm, n)
+		if toks := tokenize(a); len(toks) > 0 {
+			pi.aliasesTokens = append(pi.aliasesTokens, toks)
 		}
 	}
 	for _, t := range fm.Tags {
-		if n := normalize(t); n != "" {
-			pi.tagsNorm = append(pi.tagsNorm, n)
+		if toks := tokenize(t); len(toks) > 0 {
+			pi.tagsTokens = append(pi.tagsTokens, toks)
 		}
 	}
 
 	for _, h := range doc.Headings(pi.doc) {
 		if h.Level == 1 {
 			pi.h1 = h.Text
-			pi.h1Norm = normalize(h.Text)
+			pi.h1Tokens = tokenize(h.Text)
 			break
 		}
 	}
 	return pi
+}
+
+// setIndexSummary records the page's index.md summary (raw, for Result
+// output, and tokenized, for matching).
+func (pi *pageInfo) setIndexSummary(s string) {
+	pi.indexSummary = s
+	pi.indexSummaryTokens = tokenize(s)
 }
 
 // compiledTruthLines lazily splits the page's compiled-truth span
@@ -268,7 +271,7 @@ type rawFrontmatter struct {
 // parseFrontmatter parses d's frontmatter leniently: broken YAML, or no
 // frontmatter at all, yields a zero-value frontmatter rather than an error
 // — a page with malformed frontmatter must still match on slug/H1/body
-// (DESIGN.md §19: "never fails the command").
+// (DESIGN.md §18: "never fails the command").
 func parseFrontmatter(d *doc.Doc) frontmatter {
 	if !d.HasFM {
 		return frontmatter{}
@@ -324,12 +327,19 @@ func toStringSlice(v any) []string {
 
 // ---- index.md summaries -------------------------------------------------
 
-// indexLineRe matches "- [[name]] — summary (YYYY-MM-DD)" lines (DESIGN.md
-// §19: the vault's index.md convention). The name may itself be a wikilink
-// with an alias/anchor ("name|alias" or "name#heading"); only the part
-// before "|"/"#" is the lookup key, matching page-name resolution elsewhere
-// (vault.Resolve).
-var indexLineRe = regexp.MustCompile(`^- \[\[([^\]]+)\]\] — (.+?) \(\d{4}-\d{2}-\d{2}\)\s*$`)
+// indexLineRe matches "- [[name]] — <rest of line>" lines (DESIGN.md §18:
+// the vault's index.md convention). The name may itself be a wikilink with
+// an alias/anchor ("name|alias" or "name#heading"); only the part before
+// "|"/"#" is the lookup key, matching page-name resolution elsewhere
+// (vault.Resolve). The summary is everything after the first " — ": a
+// trailing "(YYYY-MM-DD)" date is the common case, but not every line ends
+// in one (e.g. no trailing parenthetical at all), and some end in a
+// non-date status parenthetical ("(DRAFT, 2026-06-13)", "(seed,
+// 2026-09-11)") that still carries a date inside it — trailingDateParenRe
+// strips exactly one trailing parenthetical, and only when it contains a
+// full date, rather than assuming the fixed "(YYYY-MM-DD)" shape.
+var indexLineRe = regexp.MustCompile(`^- \[\[([^\]]+)\]\] — (.+)$`)
+var trailingDateParenRe = regexp.MustCompile(`\s*\([^()]*\d{4}-\d{2}-\d{2}[^()]*\)\s*$`)
 
 // loadIndex reads config.Find.Index (default "index.md") and returns a
 // name -> summary map. A missing file is skipped silently; lines that don't
@@ -342,6 +352,7 @@ func loadIndex(v *vault.Vault) (map[string]string, error) {
 	}
 	out := map[string]string{}
 	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimRight(line, "\r")
 		m := indexLineRe.FindStringSubmatch(line)
 		if m == nil {
 			continue
@@ -350,22 +361,80 @@ func loadIndex(v *vault.Vault) (map[string]string, error) {
 		if i := strings.IndexAny(name, "|#"); i != -1 {
 			name = name[:i]
 		}
-		out[name] = m[2]
+		summary := trailingDateParenRe.ReplaceAllString(m[2], "")
+		out[name] = strings.TrimSpace(summary)
 	}
 	return out, nil
 }
 
-// ---- normalization & scoring --------------------------------------------
+// ---- tokenization & scoring ----------------------------------------------
 
-// sepRun matches runs of "-", "_" and whitespace, the equivalence classes
-// find's matching treats as interchangeable (DESIGN.md §19: "po agent",
-// "po-agent" and "po_agent" all match each other).
-var sepRun = regexp.MustCompile(`[-_\s]+`)
+// tokenize splits s into lowercase runs of Unicode letters/digits, treating
+// every other character (the separator class this tool's matching treats
+// as interchangeable: "-", "_", whitespace, and any other punctuation like
+// ".", "/", "(", ":") as a token boundary. This is what makes "po agent",
+// "po-agent" and "po_agent" all tokenize to ["po","agent"] and match each
+// other (DESIGN.md §18), while also stopping a term like "ai" from
+// substring-matching inside an unrelated word like "failed" or "email" —
+// "ai" only ever appears as its own token, never as a run of letters
+// spanning two real words. unicode.IsLetter/IsDigit make this correct for
+// non-ASCII vault text (Dutch).
+func tokenize(s string) []string {
+	var tokens []string
+	var cur []rune
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			cur = append(cur, unicode.ToLower(r))
+			continue
+		}
+		if len(cur) > 0 {
+			tokens = append(tokens, string(cur))
+			cur = cur[:0]
+		}
+	}
+	if len(cur) > 0 {
+		tokens = append(tokens, string(cur))
+	}
+	return tokens
+}
 
-func normalize(s string) string {
-	s = strings.ToLower(s)
-	s = sepRun.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
+// tokenExact reports whether a and b are the same length and equal
+// token-for-token.
+func tokenExact(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// tokenPrefixWindow reports whether term's token sequence appears
+// contiguously somewhere in field's, with every term token a prefix of the
+// aligned field token (DESIGN.md §18: "dam" matches "dam-cutoff", "stock"
+// matches "stocky", "po agent" matches "po-agent", but "ai" does not match
+// "payment-failed" — "ai" is never a prefix of "payment" or "failed").
+func tokenPrefixWindow(term, field []string) bool {
+	n, m := len(term), len(field)
+	if n == 0 || m == 0 || n > m {
+		return false
+	}
+	for start := 0; start+n <= m; start++ {
+		ok := true
+		for i := 0; i < n; i++ {
+			if !strings.HasPrefix(field[start+i], term[i]) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 type fieldScore struct {
@@ -374,11 +443,11 @@ type fieldScore struct {
 }
 
 // bestMetadataField returns the single best-matching metadata field for one
-// (already-normalized) term, or a zero fieldScore if none match. Candidates
+// term (already tokenized), or a zero fieldScore if none match. Candidates
 // are considered in DESIGN.md's weight order; a strict ">" keeps that order
 // as the tie-break when two fields score equally (e.g. an exact title and
 // an exact alias both at 40).
-func bestMetadataField(term string, pi *pageInfo) fieldScore {
+func bestMetadataField(term []string, pi *pageInfo) fieldScore {
 	var best fieldScore
 
 	consider := func(field string, weight int) {
@@ -387,11 +456,11 @@ func bestMetadataField(term string, pi *pageInfo) fieldScore {
 		}
 	}
 
-	consider("slug", scoreExactSub(term, pi.slugNorm, weightSlugExact, weightSlugSub))
-	consider("title", scoreExactSub(term, pi.titleNorm, weightTitleExact, weightTitleSub))
+	consider("slug", scoreExactSub(term, pi.slugTokens, weightSlugExact, weightSlugSub))
+	consider("title", scoreExactSub(term, pi.titleTokens, weightTitleExact, weightTitleSub))
 
 	aliasBest := 0
-	for _, a := range pi.aliasesNorm {
+	for _, a := range pi.aliasesTokens {
 		if w := scoreExactSub(term, a, weightAliasExact, weightAliasSub); w > aliasBest {
 			aliasBest = w
 		}
@@ -399,32 +468,35 @@ func bestMetadataField(term string, pi *pageInfo) fieldScore {
 	consider("alias", aliasBest)
 
 	tagBest := 0
-	for _, t := range pi.tagsNorm {
-		if t != "" && strings.Contains(t, term) {
+	for _, t := range pi.tagsTokens {
+		if tokenPrefixWindow(term, t) {
 			tagBest = weightTag
 			break
 		}
 	}
 	consider("tag", tagBest)
 
-	if pi.indexSummary != "" && strings.Contains(normalize(pi.indexSummary), term) {
+	if tokenPrefixWindow(term, pi.indexSummaryTokens) {
 		consider("index", weightIndex)
 	}
-	if pi.h1Norm != "" && strings.Contains(pi.h1Norm, term) {
+	if tokenPrefixWindow(term, pi.h1Tokens) {
 		consider("h1", weightH1)
 	}
 
 	return best
 }
 
-func scoreExactSub(term, fieldNorm string, exactW, subW int) int {
-	if fieldNorm == "" || term == "" {
+// scoreExactSub scores one field against term: exactW when the whole
+// token sequences are equal, subW when term's tokens merely align (as
+// prefixes) somewhere in field's tokens, 0 otherwise.
+func scoreExactSub(term, field []string, exactW, subW int) int {
+	if len(term) == 0 || len(field) == 0 {
 		return 0
 	}
-	if fieldNorm == term {
+	if tokenExact(term, field) {
 		return exactW
 	}
-	if strings.Contains(fieldNorm, term) {
+	if tokenPrefixWindow(term, field) {
 		return subW
 	}
 	return 0
@@ -432,10 +504,10 @@ func scoreExactSub(term, fieldNorm string, exactW, subW int) int {
 
 // scorePage sums, per term, the single best-matching field's weight (0 if
 // none), returning the page's total score, the deduplicated list of fields
-// that contributed (in first-contributed order), and — with opts.Body — up
-// to 3 compiled-truth lines recorded for whichever terms only matched via
-// body text (DESIGN.md §19).
-func scorePage(pi *pageInfo, terms []string, opts Options) (score int, matched []string, body []BodyMatch) {
+// that contributed (in first-contributed order), and — with opts.Body — the
+// first compiled-truth line recorded per body-fallback term, capped at 3
+// lines total per page (DESIGN.md §18.4).
+func scorePage(pi *pageInfo, termToks [][]string, opts Options) (score int, matched []string, body []BodyMatch) {
 	seen := map[string]bool{}
 	add := func(field string) {
 		if !seen[field] {
@@ -444,8 +516,8 @@ func scorePage(pi *pageInfo, terms []string, opts Options) (score int, matched [
 		}
 	}
 
-	var bodyTerms []string
-	for _, t := range terms {
+	var bodyTermToks [][]string
+	for _, t := range termToks {
 		bf := bestMetadataField(t, pi)
 		if bf.weight > 0 {
 			score += bf.weight
@@ -453,24 +525,29 @@ func scorePage(pi *pageInfo, terms []string, opts Options) (score int, matched [
 			continue
 		}
 		if opts.Body {
-			bodyTerms = append(bodyTerms, t)
+			bodyTermToks = append(bodyTermToks, t)
 		}
 	}
 
-	if len(bodyTerms) == 0 {
+	if len(bodyTermToks) == 0 {
 		return score, matched, nil
 	}
 
-	found := make([]bool, len(bodyTerms))
+	// A found term stops scanning for that term (first matching line per
+	// body term), and recording stops once the page-wide cap of 3 lines is
+	// hit — whichever comes first.
+	found := make([]bool, len(bodyTermToks))
 	for _, ln := range pi.compiledTruthLines() {
-		normed := normalize(ln.text)
-		for i, t := range bodyTerms {
-			if found[i] || !strings.Contains(normed, t) {
+		lineTokens := tokenize(ln.text)
+		for i, t := range bodyTermToks {
+			if found[i] {
 				continue
 			}
-			found[i] = true
-			if len(body) < 3 {
-				body = append(body, BodyMatch{Line: ln.num, Text: snippet(ln.text)})
+			if tokenPrefixWindow(t, lineTokens) {
+				found[i] = true
+				if len(body) < 3 {
+					body = append(body, BodyMatch{Line: ln.num, Text: snippet(ln.text)})
+				}
 			}
 		}
 	}

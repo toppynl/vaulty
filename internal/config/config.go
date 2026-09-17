@@ -32,15 +32,10 @@ type Config struct {
 	Find        Find        `yaml:"find" json:"find"`
 }
 
-// Find configures `vaulty find` (DESIGN.md §19).
+// Find configures `vaulty find` (DESIGN.md §18).
 type Find struct {
-	// Exclude is a glob list (same semantics as the top-level Exclude)
-	// hiding matching pages from `find` by default; `--all` ignores it.
-	// It layers on top of Exclude/Dirs (already applied by vault.Walk),
-	// it never re-includes anything those already dropped.
-	Exclude []string `yaml:"exclude" json:"exclude"`
 	// Index is the vault-relative path to the index file `find` reads
-	// summaries from ("- [[name]] — summary (YYYY-MM-DD)" lines). A
+	// summaries from ("- [[name]] — summary" lines, optionally dated). A
 	// missing file is skipped silently.
 	Index string `yaml:"index" json:"index"`
 }
@@ -141,7 +136,7 @@ func Default() *Config {
 			Shard:        Shard{TypeDirs: []string{"wiki/*"}},
 		},
 		Log:  Log{Path: "log.md"},
-		Find: Find{Exclude: []string{}, Index: "index.md"},
+		Find: Find{Index: "index.md"},
 	}
 }
 

@@ -14,7 +14,7 @@ type findOpts struct {
 	limit int
 	typ   string
 	body  bool
-	all   bool
+	only  []string
 }
 
 func (a *app) newFindCmd() *cobra.Command {
@@ -30,7 +30,7 @@ func (a *app) newFindCmd() *cobra.Command {
 	cmd.Flags().IntVar(&o.limit, "limit", 10, "max results (0 = unlimited)")
 	cmd.Flags().StringVar(&o.typ, "type", "", "only pages whose frontmatter type equals this")
 	cmd.Flags().BoolVar(&o.body, "body", false, "also match compiled-truth body text (lowest-weight fallback field)")
-	cmd.Flags().BoolVar(&o.all, "all", false, "ignore find.exclude")
+	cmd.Flags().StringSliceVar(&o.only, "only", nil, "repeatable/comma-separated: restrict to a dir (\"wiki\", \"now/actions\") or glob (\"wiki/*.md\"); default is the whole vault")
 	return cmd
 }
 
@@ -45,7 +45,7 @@ func (a *app) runFind(o findOpts, rawTerms []string) error {
 		return err
 	}
 
-	results, err := find.Search(v, terms, find.Options{Body: o.body, All: o.all, Type: o.typ})
+	results, err := find.Search(v, terms, find.Options{Body: o.body, Only: o.only, Type: o.typ})
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
 	}

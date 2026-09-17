@@ -41,7 +41,11 @@ log:
   path: log.md                  # `vaulty log append|last|lint` target, relative to the root
 
 find:
-  exclude: []                   # glob list, same semantics as top-level `exclude`;
-                                 # hides matching pages from `find` by default; --all ignores it
   index: index.md               # vault-relative path `find` reads index summaries from;
                                  # a missing file is skipped silently
+  # `find`'s --only <dir|glob> (repeatable/comma-separated) has no config
+  # key — it's a per-invocation narrowing (e.g. --only wiki, --only now/actions),
+  # not a vault-wide setting. The vault-wide "never scan" list stays the
+  # top-level `exclude` above; a vault with a working/archive layer that
+  # should default OUT of `find` results entirely would list it there, e.g.
+  # exclude: [archive/**, now/tracking/**, now/actions/**]

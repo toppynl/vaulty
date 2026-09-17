@@ -133,7 +133,7 @@ vaulty [--vault DIR] [--json]
 │   ├── append <op> <title> [--body TEXT] [--date YYYY-MM-DD]
 │   ├── last   [-n|--n N] [--op OP] [--since DATE]
 │   └── lint
-├── find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--all] [--json]
+├── find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--json]
 ├── config print                     (step 1: effective config + root + config path)
 └── version / --version
 ```
@@ -240,11 +240,14 @@ lint:
 log:
   path: log.md             # `log append|last|lint` target, relative to the root
 find:
-  exclude: []              # glob list, same semantics as top-level `exclude` (§4.3);
-                           # hides matching pages from `find` by default; --all ignores it
   index: index.md          # vault-relative path `find` reads index summaries from;
                            # a missing file is skipped silently (§18)
 ```
+
+`find`'s `--only <dir|glob>` flag (repeatable/comma-separated, §18.1) has
+no config key — it's a per-invocation narrowing, not a vault-wide setting,
+and is implemented generically in the `vault` package (`OnlyPatterns`,
+`FilterOnly`) so the later `search` command can take the same flag.
 
 `lint.overrides` is a list of glob-scoped exemptions, layered on top of
 `severity`/the baseline rather than replacing them:
@@ -1904,18 +1907,38 @@ to `vaulty timeline read`. Implemented in `internal/find` (scoring, pure of
 any CLI concerns) plus `internal/cli/find.go` (command tree + rendering),
 mirroring the `timeline`/`log` package split.
 
-### 18.1 Scope and normalization
+### 18.1 Scope and tokenization
 
-Scope is `vault.Walk()` (`config.dirs` + top-level `exclude`, §4.3), minus
-`find.exclude` (a second glob list, same semantics, meant for pages that
-are real vault content but shouldn't surface as discovery hits, e.g. a
-superseded `archive/` layer) — `--all` ignores `find.exclude` only, not
-`exclude` (that scoping is `vault.Walk()`'s own and always applies).
+Scope is `vault.Walk()` — `config.dirs` minus the global `exclude` (§4.3),
+the same "never scan this" list every other command respects — and nothing
+narrower by default: `find` searches the whole vault. `--only <dir|glob>`
+(repeatable, also comma-separated) restricts a single invocation further:
+a bare name with no glob metacharacter (`*`, `?`, `[`) means "everything
+under that directory" (`--only wiki` → `wiki/**`, `--only now/actions` →
+`now/actions/**`); anything containing one is used as a glob exactly as
+given (`MatchGlob` semantics). A file is kept if it matches *any* `--only`
+pattern. `--only` pointing outside `config.dirs` (or at a path `exclude`
+already dropped) simply yields nothing for that invocation — never an
+error, since a caller narrowing to the wrong place should see "no
+matches", not a crash. Implemented generically in the `vault` package
+(`OnlyPatterns`, `FilterOnly`) rather than inside `internal/find`, since
+the later `search` command (§3.1's reserved table) is meant to take the
+same `--only` flag rather than invent its own notion of scope.
 
-Matching normalizes both the term and every candidate field the same way:
-lowercase, then collapse runs of `-`, `_` and whitespace to a single space.
-This is plain substring matching (no regex), so `po agent`, `po-agent` and
-`po_agent` all become `po agent` and match each other.
+Matching tokenizes both the term and every candidate field the same way
+(`internal/find/find.go`'s `tokenize`): lowercase, split on every run of
+non-letter/non-digit characters (`-`, `_`, whitespace, and other
+punctuation like `.`, `/`, `(`, `:` — Unicode-aware, so Dutch vault text
+tokenizes correctly). A term's token sequence matches a field when it
+appears contiguously in the field's token sequence with every term token a
+*prefix* of the token it aligns with; the match is exact when the two
+token sequences are equal outright, substring otherwise. So `po agent`
+(`["po","agent"]`) matches `po-agent`/`po_agent` (also `["po","agent"]`,
+exactly), `dam` matches `dam-cutoff`, and `stock` matches `stocky` — but
+`ai` never matches `payment-failed` or `email`, because `ai` is only ever
+a prefix of a *whole* token, never of a run of letters spanning two real
+words; splitting on token boundaries first is what plain substring
+matching over a separator-collapsed string got wrong.
 
 ### 18.2 Fields, weights and per-term scoring
 
@@ -1960,26 +1983,35 @@ never fails the command, and its `type`/`title`/`aliases`/`tags` are just
 empty. `aliases`/`tags` accept either a YAML list or a single bare scalar.
 
 The index summary comes from `find.index` (default `index.md`, the
-vault's own catalog convention: `- [[name]] — summary (YYYY-MM-DD)` lines).
+vault's own catalog convention: `- [[name]] — <rest of line>` lines).
 `find` reads it once per invocation, maps `name -> summary` (the wikilink
 normalization — cut at the first `|` or `#` — matches `vault.Resolve`,
-§3.3), and looks up each page by `basename == name`. A missing index file
-is skipped silently (empty map, not an error); a line that doesn't match
-the convention is ignored. Sharded child pages
-(`wiki/<type>/<x>/<x>-<part>.md`) are never index entries by convention and
-so never get an index-summary match — they still match on their own
-slug/frontmatter/H1/body.
+§3.3), and looks up each page by `basename == name`. The summary is
+everything after the first ` — `; a single trailing parenthetical is
+stripped from it, but only when that parenthetical contains a full
+`YYYY-MM-DD` date somewhere inside it — covering both the common
+`(YYYY-MM-DD)` form and status-plus-date forms like `(DRAFT,
+2026-06-13)`/`(seed, 2026-09-11)` — so a line with no trailing date at all
+(or a non-date trailing parenthetical) still counts, keeping its full
+remainder as the summary rather than silently being skipped. A missing
+index file is skipped silently (empty map, not an error); a line that
+doesn't match the `- [[name]] — ...` shape at all is ignored. Sharded
+child pages (`wiki/<type>/<x>/<x>-<part>.md`) are never index entries by
+convention and so never get an index-summary match — they still match on
+their own slug/frontmatter/H1/body.
 
 ### 18.4 `--body`
 
 Scans the page's compiled-truth span (`timeline.Parse`'s `CompiledTruth`,
 §5.2 — the same span `timeline read`'s default mode prints, i.e. above the
 Timeline divider, frontmatter excluded) line by line, for whichever terms
-didn't already match a higher-weight field (§18.2). Up to 3 matching lines
-are recorded per page across all such terms combined (not 3 per term) —
-enough to show why a body-only hit exists without flooding the output —
-as `{line, text}`, `text` trimmed and capped at 120 bytes, backed off to
-the nearest UTF-8 rune boundary so a multi-byte rune is never split.
+didn't already match a higher-weight field (§18.2). For each such term,
+scanning stops at its first matching line (one body match per term, not
+every line it appears on); recording additionally stops once the page has
+3 body matches total, whichever limit is hit first — enough to show why a
+body-only hit exists without flooding the output — as `{line, text}`,
+`text` trimmed and capped at 120 bytes, backed off to the nearest UTF-8
+rune boundary so a multi-byte rune is never split.
 
 ### 18.5 Output
 

@@ -30,9 +30,10 @@ vaulty log append <op> <title> [--body TEXT] [--date YYYY-MM-DD]  # appends to l
 vaulty log last [-n N] [--op OP] [--since D]                      # most recent entries
 vaulty log lint                                                   # report malformed entries
 
-vaulty find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--all] [--json]
+vaulty find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GLOB] [--json]
 # ranked vault-relative page paths for term(s) — slug/title/aliases/tags/index/H1
 # (and, with --body, compiled-truth text) — replaces raw grep/find as a discovery step
+# --only (repeatable/comma-separated) restricts to a dir ("wiki") or glob ("wiki/*.md")
 ```
 
 `<page>` accepts a bare name (`toppy`), a path (`wiki/systems/toppy.md`), or

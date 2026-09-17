@@ -250,3 +250,52 @@ func MatchAny(patterns []string, rel string) bool {
 	}
 	return false
 }
+
+// hasGlobMeta reports whether s contains any glob metacharacter this
+// package's matching understands ("*", "?", "["). Used to tell a bare
+// directory name ("wiki") from an actual glob ("wiki/**", "wiki/*.md") in
+// --only-style flags (OnlyPatterns).
+func hasGlobMeta(s string) bool {
+	return strings.ContainsAny(s, "*?[")
+}
+
+// OnlyPatterns expands raw --only tokens (already split on commas by the
+// caller) into match patterns for FilterOnly: a bare name with no glob
+// metacharacters becomes "<name>/**" (so "wiki" and "now/actions" both mean
+// "everything under that directory"); anything containing "*", "?" or "["
+// is used exactly as given (MatchGlob semantics, §4.3). Blank tokens are
+// dropped. This is shared, not `find`-specific, so the later `search`
+// command can reuse the same --only flag and expansion rule.
+func OnlyPatterns(raw []string) []string {
+	var out []string
+	for _, r := range raw {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		if hasGlobMeta(r) {
+			out = append(out, r)
+		} else {
+			out = append(out, strings.TrimSuffix(r, "/")+"/**")
+		}
+	}
+	return out
+}
+
+// FilterOnly keeps only the files matching at least one of patterns
+// (already expanded via OnlyPatterns). No patterns means no filtering —
+// every file is kept, matching Walk's own "no dirs given" convention. A
+// pattern that matches nothing (e.g. --only pointing outside Config.Dirs)
+// simply yields no files for that pattern; FilterOnly itself never errors.
+func FilterOnly(files []string, patterns []string) []string {
+	if len(patterns) == 0 {
+		return files
+	}
+	var out []string
+	for _, f := range files {
+		if MatchAny(patterns, f) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
