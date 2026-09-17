@@ -5,7 +5,6 @@ package lint
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -203,7 +202,10 @@ func tableHasKeywordCell(headerLine string, keywords []string) bool {
 
 // parseFile reads and parses one vault-relative file.
 func parseFile(v *vault.Vault, rel string) (*timeline.Page, error) {
-	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	full, err := v.ContentFile(rel)
+	if err != nil {
+		return nil, err
+	}
 	src, err := os.ReadFile(full)
 	if err != nil {
 		return nil, err
@@ -221,7 +223,10 @@ func Run(v *vault.Vault, files []string, opt Options) (*Result, error) {
 		res.Counts[diag.PG002CompiledTruthSize] = 0
 	}
 
-	baselinePath := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
+	baselinePath, err := v.ConfigFile(v.Config.Lint.BaselinePath)
+	if err != nil {
+		return nil, err
+	}
 	baseline, err := LoadBaseline(baselinePath)
 	if err != nil {
 		return nil, err

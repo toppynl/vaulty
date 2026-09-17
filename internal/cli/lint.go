@@ -112,7 +112,10 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 		return &ExitError{Code: ExitIO, Err: err}
 	}
 
-	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
+	path, err := v.ConfigFile(v.Config.Lint.BaselinePath)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
+	}
 	old, err := resolveWriteBaselineOld(v, path, false)
 	if err != nil {
 		return &ExitError{Code: ExitIO, Err: err}
@@ -181,7 +184,10 @@ func (a *app) runWriteBaseline(v *vault.Vault, acceptGrowth bool) error {
 // working tree. Staging a growth and then restoring the file on disk would
 // otherwise read as a shrink.
 func (a *app) runCheckBaseline(v *vault.Vault, staged bool) error {
-	path := filepath.Join(v.Root, filepath.FromSlash(v.Config.Lint.BaselinePath))
+	path, err := v.ConfigFile(v.Config.Lint.BaselinePath)
+	if err != nil {
+		return &ExitError{Code: ExitUsage, Err: err}
+	}
 	if _, err := resolveWriteBaselineOld(v, path, staged); err != nil {
 		return &ExitError{Code: ExitFindings, Err: err}
 	}
@@ -477,8 +483,8 @@ func resolveLintArg(v *vault.Vault, a string) (string, os.FileInfo, error) {
 
 // resolveLintArgs implements the "lint DIR..." (vault mode) vs
 // "lint FILE..." (files mode) split (DESIGN.md §6.2). All-directories goes
-// through vault.Walk; anything else resolves each arg as an explicit file
-// (which may lie outside config.dirs).
+// through vault.Walk; anything else resolves each arg as an explicit file,
+// which must be vault content (DESIGN.md §3.5).
 func resolveLintArgs(v *vault.Vault, args []string) (lint.Mode, []string, error) {
 	allDirs := true
 	abses := make([]string, len(args))
@@ -512,7 +518,11 @@ func resolveLintArgs(v *vault.Vault, args []string) (lint.Mode, []string, error)
 		if err != nil {
 			return "", nil, err
 		}
-		files[i] = filepath.ToSlash(rel)
+		rel = filepath.ToSlash(rel)
+		if _, err := v.ContentFile(rel); err != nil {
+			return "", nil, err
+		}
+		files[i] = rel
 	}
 	sort.Strings(files)
 	return lint.ModeFiles, files, nil
@@ -562,24 +572,13 @@ func changedFiles(v *vault.Vault, ref string) ([]string, error) {
 		set[l] = true
 	}
 
-	dirGlobs := make([]string, len(v.Config.Dirs))
-	for i, d := range v.Config.Dirs {
-		dirGlobs[i] = d + "/**"
-	}
-
 	var out []string
 	for rel := range set {
 		rel = filepath.ToSlash(rel)
 		if !strings.HasSuffix(rel, ".md") {
 			continue
 		}
-		if !vault.MatchAny(dirGlobs, rel) {
-			continue
-		}
-		if vault.MatchAny(v.Config.Exclude, rel) {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(v.Root, filepath.FromSlash(rel))); err != nil {
+		if _, err := v.ContentFile(rel); err != nil {
 			continue
 		}
 		out = append(out, rel)
@@ -631,6 +630,9 @@ func (a *app) runTimelineLintHook() error {
 		return nil
 	}
 	if !vault.MatchAny(v.Config.Lint.HookPaths, rel) {
+		return nil
+	}
+	if _, err := v.ContentFile(rel); err != nil {
 		return nil
 	}
 

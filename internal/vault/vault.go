@@ -31,6 +31,9 @@ var (
 	ErrNotFound  = errors.New("page not found")
 	ErrAmbiguous = errors.New("page name is ambiguous")
 	ErrOutside   = errors.New("path is outside the vault")
+	// ErrNotContent: the path is inside the root but not on the content
+	// allowlist (IsContent), e.g. .git/config or a file outside dirs.
+	ErrNotContent = errors.New("path is not vault content")
 )
 
 // Open resolves the root: flagRoot > $VAULTY_ROOT > nearest ancestor of
@@ -135,7 +138,14 @@ func (v *Vault) resolvePath(a string) (string, error) {
 			}
 			st, err := os.Stat(full)
 			if err == nil && !st.IsDir() {
-				return v.toRelInside(full)
+				rel, err := v.toRelInside(full)
+				if err != nil {
+					return "", err
+				}
+				if !v.IsContent(rel) {
+					return "", fmt.Errorf("%w: %s", ErrNotContent, a)
+				}
+				return rel, nil
 			}
 		}
 	}
@@ -185,14 +195,83 @@ func (v *Vault) resolveName(a string) (string, error) {
 	}
 }
 
+// IsContent reports whether rel (a vault-relative slash path, symlinks
+// already resolved) is vault content (DESIGN.md §3.5). This is an allowlist:
+// only a `.md` file under one of Config.Dirs, with no segment starting with
+// "." and not matched by Config.Exclude. Everything else (.git, other
+// hidden dirs, files outside dirs, non-markdown files) is never read,
+// indexed or written through a page argument.
+func (v *Vault) IsContent(rel string) bool {
+	if !strings.HasSuffix(rel, ".md") || !config.SafeRel(rel, false) {
+		return false
+	}
+	inDir := false
+	for _, d := range v.Config.Dirs {
+		if d == "." || strings.HasPrefix(rel, strings.TrimSuffix(d, "/")+"/") {
+			inDir = true
+			break
+		}
+	}
+	return inDir && !MatchAny(v.Config.Exclude, rel)
+}
+
+// ContentFile returns the absolute path of rel after re-checking, with
+// symlinks resolved, that it is still vault content. Callers that read a
+// path taken from Walk output or an index use it as a last line of
+// defence against a symlink swapped in after the walk.
+func (v *Vault) ContentFile(rel string) (string, error) {
+	if !v.IsContent(rel) {
+		return "", fmt.Errorf("%w: %s", ErrNotContent, rel)
+	}
+	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	resolved, err := v.toRelInside(full)
+	if err != nil {
+		return "", err
+	}
+	if !v.IsContent(resolved) {
+		return "", fmt.Errorf("%w: %s", ErrNotContent, rel)
+	}
+	return full, nil
+}
+
+// ConfigFile returns the absolute path of a vault-relative file named in
+// config (log.path, find.index, lint.baseline_path). The path must be
+// SafeRel (a hidden file name is allowed, a hidden directory is not), and
+// when it exists its symlink-resolved target must be too. A missing file
+// is not an error: callers decide what absence means.
+func (v *Vault) ConfigFile(rel string) (string, error) {
+	if !config.SafeRel(rel, true) {
+		return "", fmt.Errorf("%w: %s", ErrNotContent, rel)
+	}
+	full := filepath.Join(v.Root, filepath.FromSlash(rel))
+	if _, err := os.Lstat(full); err != nil {
+		return full, nil
+	}
+	resolved, err := v.toRelInside(full)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return full, nil // dangling symlink: reads fail as missing
+		}
+		return "", err
+	}
+	if !config.SafeRel(resolved, true) {
+		return "", fmt.Errorf("%w: %s", ErrNotContent, rel)
+	}
+	return full, nil
+}
+
 // Walk returns vault-relative .md files under dirs (default: Config.Dirs),
-// sorted, skipping dot-dirs and Config.Exclude.
+// sorted, keeping only vault content (ContentFile: the path and, for a
+// symlink, its target).
 func (v *Vault) Walk(dirs ...string) ([]string, error) {
 	if len(dirs) == 0 {
 		dirs = v.Config.Dirs
 	}
 	var out []string
 	for _, d := range dirs {
+		if !config.SafeRel(d, false) {
+			continue
+		}
 		abs := filepath.Join(v.Root, d)
 		st, err := os.Stat(abs)
 		if err != nil || !st.IsDir() {
@@ -216,7 +295,7 @@ func (v *Vault) Walk(dirs ...string) ([]string, error) {
 				return err
 			}
 			rel = filepath.ToSlash(rel)
-			if MatchAny(v.Config.Exclude, rel) {
+			if _, err := v.ContentFile(rel); err != nil {
 				return nil
 			}
 			out = append(out, rel)

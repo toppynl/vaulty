@@ -82,7 +82,11 @@ func loadCorpus(v *vault.Vault) (*corpus, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &corpus{v: v, summaries: page.LoadIndex(v.Root, v.Config.Find.Index)}
+	idx, err := v.ConfigFile(v.Config.Find.Index)
+	if err != nil {
+		return nil, err
+	}
+	c := &corpus{v: v, summaries: page.LoadIndex(idx)}
 	for _, rel := range rels {
 		st, err := os.Stat(filepath.Join(v.Root, filepath.FromSlash(rel)))
 		if err != nil {
@@ -95,7 +99,11 @@ func loadCorpus(v *vault.Vault) (*corpus, error) {
 
 // load reads and parses one page, returning its manifest entry.
 func (c *corpus) load(f corpusFile) (*parsedPage, Entry, error) {
-	src, err := os.ReadFile(filepath.Join(c.v.Root, filepath.FromSlash(f.rel)))
+	full, err := c.v.ContentFile(f.rel)
+	if err != nil {
+		return nil, Entry{}, err
+	}
+	src, err := os.ReadFile(full)
 	if err != nil {
 		return nil, Entry{}, err
 	}
@@ -236,6 +244,12 @@ func finish(resp *Response, sr *bleve.SearchResult, corp *corpus, q *Query, opts
 
 	resp.Results = []Result{}
 	for _, h := range sr.Hits {
+		// Never surface a hit that is not vault content, even if a stale
+		// cache still holds it (DESIGN.md §3.5).
+		full, err := corp.v.ContentFile(h.ID)
+		if err != nil {
+			continue
+		}
 		r := Result{Path: h.ID, Snippets: []Snippet{}}
 		r.Type, _ = h.Fields[fieldType].(string)
 		r.Title, _ = h.Fields[fieldTitle].(string)
@@ -244,7 +258,7 @@ func finish(resp *Response, sr *bleve.SearchResult, corp *corpus, q *Query, opts
 			if top > 0 {
 				r.Score = math.Round(h.Score/top*10000) / 10000
 			}
-			if src, err := os.ReadFile(filepath.Join(corp.v.Root, filepath.FromSlash(h.ID))); err == nil {
+			if src, err := os.ReadFile(full); err == nil {
 				pg := parsePage(h.ID, src, r.Summary, corp.v.Config.Timeline)
 				r.Snippets = hl.snippets(pg, opts.Timeline)
 			}

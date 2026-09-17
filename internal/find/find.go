@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -109,7 +108,11 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 	}
 	files = vault.FilterOnly(files, vault.OnlyPatterns(opts.Only))
 
-	index := page.LoadIndex(v.Root, v.Config.Find.Index)
+	idx, err := v.ConfigFile(v.Config.Find.Index)
+	if err != nil {
+		return nil, err
+	}
+	index := page.LoadIndex(idx)
 
 	termToks := make([][]string, len(terms))
 	for i, t := range terms {
@@ -118,7 +121,10 @@ func Search(v *vault.Vault, terms []string, opts Options) ([]Result, error) {
 
 	var results []Result
 	for _, rel := range files {
-		full := filepath.Join(v.Root, filepath.FromSlash(rel))
+		full, err := v.ContentFile(rel)
+		if err != nil {
+			continue
+		}
 		src, err := os.ReadFile(full)
 		if err != nil {
 			continue // best effort: an unreadable file just doesn't match
