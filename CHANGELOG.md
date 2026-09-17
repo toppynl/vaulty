@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/toppynl/vaulty/compare/v0.3.0...v0.4.0) (2026-09-17)
+
+
+### Features
+
+* vaulty setup installs agent skills for Claude Code, Codex, Gemini CLI, OpenCode and pi ([#18](https://github.com/toppynl/vaulty/issues/18)) ([225ce40](https://github.com/toppynl/vaulty/commit/225ce40417cb197bae405c61daa0fe20f31a09dc))
+
 ## [0.3.0](https://github.com/toppynl/vaulty/compare/v0.2.0...v0.3.0) (2026-09-17)
 
 
