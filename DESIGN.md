@@ -1349,56 +1349,90 @@ for it.
 
 ## 11. Release and install
 
-- **Release.** Tagging `vX.Y.Z` runs `.github/workflows/release.yml`, which
-  runs goreleaser. It builds `linux,darwin × amd64,arm64`, CGO disabled,
-  with `-trimpath`, and `main.version` set via ldflags.
-- **Assets.** They have versionless names: `vaulty_<os>_<arch>.tar.gz` plus
-  `checksums.txt`. If the repo is ever public, the stable URL is
-  `https://github.com/toppynl/vaulty/releases/latest/download/vaulty_linux_amd64.tar.gz`.
-- **CI** (`ci.yml`) runs gofmt, vet, test and build on pushes and PRs.
-- **Private repo.** Installing needs a token, so `gh` is preferred.
+The repo is public (2026-09). Releases are versioned and changelogged by
+[release-please](https://github.com/googleapis/release-please), and
+binaries are built by goreleaser and downloadable with no GitHub auth.
 
-`scripts/install.sh` (step 5):
+- **Versioning.** `release-please-config.json` (release-type `go`,
+  `include-v-in-tag: true`, `bump-minor-pre-major: true`,
+  `packages["."].initial-version: "0.1.0"`) + `.release-please-manifest.json`
+  (`"." : "0.0.0"`) drive `CHANGELOG.md` at the repo root. The two settings
+  do different jobs, checked against release-please's own source
+  (`src/strategies/base.ts`, `src/manifest.ts`), not guessed: with the
+  manifest at exactly `"0.0.0"` release-please does **not** synthesize a
+  fake prior release from it (that value is special-cased to mean "no
+  release yet"), so the first release PR has no `latestRelease` to bump
+  from and skips the versioning-strategy bump entirely, falling straight
+  to `initial-version` — hence `0.1.0`, not a semver-bump result and not
+  the library-default `1.0.0`. With no prior release sha, "commits since
+  last release" is the *entire* history, so the first changelog covers
+  everything merged before release-please was added, including anything
+  merged while this PR is in flight (no `bootstrap-sha`/`last-release-sha`
+  is set, on purpose, so later commits aren't excluded). From the second
+  release onward, a real `latestRelease` exists (found via the GitHub
+  release/tag, not the manifest) and normal bumping resumes:
+  `bump-minor-pre-major` means a `feat`/breaking commit bumps the minor
+  (not major) version while pre-1.0. Changelog sections: `feat`→Features,
+  `fix`→Bug Fixes, `perf`→Performance, `refactor`→Code Refactoring,
+  `docs`→Documentation; `chore`/`ci`/`test` are recorded but hidden from
+  the rendered changelog.
+- **PR titles are the commit history.** Merges are squash-merged, so the PR
+  title becomes the single commit subject release-please reads —
+  `.github/workflows/pr-title.yml` (`amannn/action-semantic-pull-request`)
+  rejects a non-conventional-commit PR title (`feat:`, `fix:`, `feat!:` /
+  `BREAKING CHANGE` footer for a major bump, etc.) before merge.
+- **Release flow.** `.github/workflows/release-please.yml` runs on push to
+  `main`: the `release-please` job maintains a standing "release PR" that
+  accumulates changelog entries; merging it is the release — release-please
+  tags `vX.Y.Z` and publishes a GitHub Release (with changelog notes) via
+  the API. A second job, `goreleaser`, gated on that job's
+  `release_created` output, checks out the new tag and runs
+  `go test ./...` then goreleaser. It has to live in the same workflow
+  run: a tag/release created through `GITHUB_TOKEN` does not fire other
+  workflows, so a tag-triggered workflow would never see it.
+  `.goreleaser.yaml` sets `changelog.disable: true` and
+  `release.mode: keep-existing` — goreleaser only attaches archives +
+  `checksums.txt` to the release release-please already created, it never
+  writes its own notes.
+- **Manual path.** `.github/workflows/release.yml` (tag-push triggered)
+  still exists for a hand-pushed `vX.Y.Z` tag. It first checks
+  (`gh release view`) whether a release already exists for that tag and
+  skips goreleaser if so — the one case that guards against, a tag someone
+  re-pushes after release-please already cut it — so it can never
+  double-release.
+- **Build.** goreleaser builds `linux,darwin × amd64,arm64`, CGO disabled,
+  with `-trimpath`, and `main.version` set via ldflags to the tag with no
+  leading `v` (so `vaulty version` prints e.g. `0.3.1` for tag `v0.3.1`).
+- **Assets.** Versionless names: `vaulty_<os>_<arch>.tar.gz` plus
+  `checksums.txt`, at the stable URL
+  `https://github.com/toppynl/vaulty/releases/latest/download/vaulty_linux_amd64.tar.gz`
+  (or `/releases/download/vX.Y.Z/...` for a pinned version).
+- **CI** (`ci.yml`) runs gofmt, vet, test and build on pushes and PRs,
+  unchanged.
 
-1. It is idempotent and exits 0 if `vaulty` is already on PATH, unless
-   `--force` is given.
-2. It detects the OS and architecture (`uname -s`/`-m`, mapping `x86_64` to
-   `amd64` and `aarch64` to `arm64`).
-3. If `gh` exists and a token is set, it installs with
-   `gh release download --repo toppynl/vaulty --pattern "vaulty_${os}_${arch}.tar.gz" -O - | tar -xz -C "$DIR" vaulty`.
-4. Otherwise, if `go` exists, it runs
-   `GOPRIVATE=github.com/toppynl go install github.com/toppynl/vaulty/cmd/vaulty@latest`.
-5. Otherwise it fails with a message.
-6. `DIR` is `${VAULTY_INSTALL_DIR:-$HOME/.local/bin}`.
+`scripts/install.sh`:
 
-The block for `/var/www/personal/me/scripts/bootstrap-cloud.sh` goes after
-the gh block, because it needs gh and `GH_TOKEN`:
+1. Downloads `vaulty_<os>_<arch>.tar.gz` + `checksums.txt` with `curl`
+   (falling back to `wget`) from `releases/latest/download/...`, or from
+   `releases/download/$VAULTY_VERSION/...` when `VAULTY_VERSION` is set.
+   No `gh`, no token.
+2. Verifies the archive against `checksums.txt` (`sha256sum -c` or
+   `shasum -a 256 -c`) before extracting.
+3. Extracts the binary to a temp dir and reads its version (bare, no `v`)
+   to compare against the currently-installed `vaulty version`. Equal and
+   not `--force` → exits 0, nothing to do. Otherwise installs atomically
+   (write alongside the target, then rename) to
+   `${VAULTY_INSTALL_DIR:-$HOME/.local/bin}`. Rerunning the script is the
+   upgrade path.
+4. Falls back to `go install github.com/toppynl/vaulty/cmd/vaulty@<version>`
+   only when neither `curl` nor `wget` is present.
+5. Supports piping: `curl -fsSL
+   https://raw.githubusercontent.com/toppynl/vaulty/main/scripts/install.sh
+   | bash`.
 
-```bash
-if ! command -v vaulty >/dev/null 2>&1; then
-  arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; esac
-  if command -v gh >/dev/null 2>&1 && [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
-    mkdir -p "$HOME/.local/bin" \
-      && gh release download --repo toppynl/vaulty --pattern "vaulty_linux_${arch}.tar.gz" -O - \
-         | tar -xz -C "$HOME/.local/bin" vaulty \
-      && export PATH="$HOME/.local/bin:$PATH" && echo "vaulty: installed" \
-      || { echo "vaulty: install FAILED"; fail=1; }
-  elif command -v go >/dev/null 2>&1; then
-    GOPRIVATE=github.com/toppynl go install github.com/toppynl/vaulty/cmd/vaulty@latest >/dev/null 2>&1 \
-      && export PATH="$PATH:$(go env GOPATH)/bin" && echo "vaulty: installed via go" \
-      || { echo "vaulty: install FAILED"; fail=1; }
-  else
-    echo "vaulty: no gh+token or go, skipping"; fail=1
-  fi
-else
-  echo "vaulty: present ($(vaulty --version 2>/dev/null))"
-fi
-```
-
-For me-template, the README gets the same two options: the one-line `gh`
-install, or `go install`. It also ships a `.vaulty.yml` and the settings
-snippet below. With a private repo, template users need access to it
-(open question Q3).
+For me-template, the README gets the same one-liner. No repo-access step
+is needed anymore now that the repo is public (closes the former open
+question about private-repo access for template users).
 
 ---
 

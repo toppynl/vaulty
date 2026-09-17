@@ -13,11 +13,33 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # Manual path for a hand-pushed tag. release-please normally creates
+      # the tag+release itself (via release-please.yml, on push to main),
+      # and a tag created through its GITHUB_TOKEN never triggers this
+      # workflow — so in practice the two paths don't overlap. Guard
+      # anyway: if a release already exists for this tag (e.g. someone
+      # re-pushes a tag release-please already cut), skip goreleaser
+      # instead of erroring on a duplicate/partial release.
+      - name: Check for an existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-go@v5
+        if: steps.existing.outputs.found == 'false'
         with:
           go-version-file: go.mod
       - run: go test ./...
+        if: steps.existing.outputs.found == 'false'
       - uses: goreleaser/goreleaser-action@v6
+        if: steps.existing.outputs.found == 'false'
         with:
           version: "~> v2"
           args: release --clean
