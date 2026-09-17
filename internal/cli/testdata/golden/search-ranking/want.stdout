@@ -1,0 +1,6 @@
+wiki/decisions/carrier-choice.md	decision	1.00	Carrier choice
+  L11: **Delivery reliability** decided it: the cheapest carrier missed too many slots.
+wiki/decisions/pim-vendor.md	decision	0.78	PIM vendor picked for product data
+  L9: After two demos we chose **Bluestone** for product data.
+wiki/decisions/magazijn-route.md	decision	0.53	onderdelen gaan via het centrale magazijn
+  L13: De **levering** van grote onderdelen plannen we twee dagen vooruit.
