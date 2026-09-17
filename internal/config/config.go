@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -30,6 +31,27 @@ type Config struct {
 	Lint        Lint        `yaml:"lint" json:"lint"`
 	Log         Log         `yaml:"log" json:"log"`
 	Find        Find        `yaml:"find" json:"find"`
+	Search      Search      `yaml:"search" json:"search"`
+}
+
+// Search configures `vaulty search` (DESIGN.md §19).
+type Search struct {
+	// Analyzers are the language analyzers every text field is indexed
+	// with, one sub-field per analyzer (e.g. [nl, en] for a bilingual
+	// vault). The unstemmed "raw" sub-field used for fuzzy/prefix/phrase
+	// queries always exists on top of these. See SearchAnalyzers for the
+	// accepted names.
+	Analyzers []string `yaml:"analyzers" json:"analyzers"`
+}
+
+// SearchAnalyzers are the analyzer names search.analyzers accepts: bleve's
+// language-neutral "standard" (unicode words, lowercased, English stop
+// words, no stemming) and "simple" (letters, lowercased), plus bleve's
+// stemming language analyzers by language code.
+var SearchAnalyzers = []string{
+	"standard", "simple",
+	"ar", "cjk", "ckb", "da", "de", "en", "es", "fa", "fi", "fr", "hi", "hr",
+	"hu", "it", "nl", "no", "pl", "pt", "ro", "ru", "sv", "tr",
 }
 
 // Find configures `vaulty find` (DESIGN.md §18).
@@ -135,8 +157,9 @@ func Default() *Config {
 			BaselinePath: ".vaulty-baseline.json",
 			Shard:        Shard{TypeDirs: []string{"wiki/*"}},
 		},
-		Log:  Log{Path: "log.md"},
-		Find: Find{Index: "index.md"},
+		Log:    Log{Path: "log.md"},
+		Find:   Find{Index: "index.md"},
+		Search: Search{Analyzers: []string{"standard"}},
 	}
 }
 
@@ -188,6 +211,19 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Find.Index) == "" {
 		return errors.New("find.index must not be empty")
+	}
+	if len(c.Search.Analyzers) == 0 {
+		return errors.New("search.analyzers must not be empty")
+	}
+	seenAnalyzer := map[string]bool{}
+	for _, a := range c.Search.Analyzers {
+		if !slices.Contains(SearchAnalyzers, a) {
+			return fmt.Errorf("search.analyzers: unknown analyzer %q (want one of %s)", a, strings.Join(SearchAnalyzers, ", "))
+		}
+		if seenAnalyzer[a] {
+			return fmt.Errorf("search.analyzers: %q listed twice", a)
+		}
+		seenAnalyzer[a] = true
 	}
 	for code, sev := range c.Lint.Severity {
 		switch sev {

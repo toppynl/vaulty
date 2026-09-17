@@ -67,6 +67,7 @@ func Execute(version string, args []string, stdin io.Reader, stdout, stderr io.W
 		}
 	}
 	args = normalizeAppendArgs(args)
+	args = normalizeSearchArgs(args)
 	a := &app{stdin: stdin, stdout: stdout, stderr: stderr, version: version}
 	root := a.newRoot()
 	root.SetArgs(args)
@@ -168,6 +169,64 @@ func normalizeAppendArgs(args []string) []string {
 	return out
 }
 
+// searchValueFlags are the long flags (global or `search`'s own) that take a
+// separate value argument, so normalizeSearchArgs never mistakes that value
+// for a query term.
+var searchValueFlags = map[string]bool{"--vault": true, "--only": true, "--type": true, "--where": true, "--limit": true}
+
+// normalizeSearchArgs lets `search` take negated query terms as ordinary
+// arguments ("vaulty search delivery -hookdeck"): every argument after the
+// `search` subcommand that starts with a single "-" (and is not "-h") is a
+// query term, not a shorthand flag — `search` defines no shorthand flags —
+// so those terms are moved after a "--" separator, in their original
+// relative order with the other positionals. A no-op when args has no
+// `search` subcommand (only the global --vault/--json may precede it) or
+// already contains "--".
+func normalizeSearchArgs(args []string) []string {
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "--vault":
+			i += 2
+			continue
+		case strings.HasPrefix(a, "--vault=") || strings.HasPrefix(a, "--json"):
+			i++
+			continue
+		}
+		break
+	}
+	if i >= len(args) || args[i] != "search" {
+		return args
+	}
+	rest := args[i+1:]
+	var flags, terms []string
+	for j := 0; j < len(rest); j++ {
+		a := rest[j]
+		if a == "--" {
+			return args
+		}
+		if strings.HasPrefix(a, "--") {
+			flags = append(flags, a)
+			if searchValueFlags[a] && j+1 < len(rest) {
+				flags = append(flags, rest[j+1])
+				j++
+			}
+			continue
+		}
+		if a == "-h" {
+			flags = append(flags, a)
+			continue
+		}
+		terms = append(terms, a)
+	}
+	out := make([]string, 0, len(args)+1)
+	out = append(out, args[:i+1]...)
+	out = append(out, flags...)
+	out = append(out, "--")
+	return append(out, terms...)
+}
+
 func (a *app) newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           name.Binary,
@@ -183,9 +242,10 @@ func (a *app) newRoot() *cobra.Command {
 	root.AddCommand(a.newTimelineCmd())
 	root.AddCommand(a.newLogCmd())
 	root.AddCommand(a.newFindCmd())
+	root.AddCommand(a.newSearchCmd())
 	root.AddCommand(a.newConfigCmd())
 	root.AddCommand(a.newVersionCmd())
-	// Reserved for later units (DESIGN.md §3.1): index, lint, migrate, dream, search.
+	// Reserved for later units (DESIGN.md §3.1): index, lint, migrate, dream, backlinks.
 	return root
 }
 

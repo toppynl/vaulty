@@ -15,4 +15,7 @@ const ConfigFile = "." + Binary + ".yml"
 var (
 	EnvRoot  = strings.ToUpper(Binary) + "_ROOT"  // overrides root discovery
 	EnvToday = strings.ToUpper(Binary) + "_TODAY" // pins "today" for --touch and tests
+	// EnvCacheDir overrides the base cache directory (default
+	// os.UserCacheDir()/<Binary>); `search` keeps one index per vault below it.
+	EnvCacheDir = strings.ToUpper(Binary) + "_CACHE_DIR"
 )
