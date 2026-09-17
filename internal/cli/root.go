@@ -332,6 +332,7 @@ func (a *app) newRoot() *cobra.Command {
 	root.AddCommand(a.newFindCmd())
 	root.AddCommand(a.newSearchCmd())
 	root.AddCommand(a.newSetupCmd())
+	root.AddCommand(a.newFrontmatterCmd())
 	root.AddCommand(a.newConfigCmd())
 	root.AddCommand(a.newVersionCmd())
 	// Reserved for later units (DESIGN.md §3.1): index, migrate, dream, backlinks.
