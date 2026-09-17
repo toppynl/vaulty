@@ -20,9 +20,9 @@ func TestSnippetCutMultibyte(t *testing.T) {
 	}
 	filler := strings.Repeat("überall ßtraße café ", 10) // 2-byte runes throughout
 	src := "# Page\n\n" + filler + "the **leverancier** signed " + filler + "\n"
-	p := parsePage("wiki/p.md", []byte(src), "", config.Default().Timeline)
+	p := parsePage("wiki/p.md", []byte(src), "", config.Default().Timeline, config.Default().Fields)
 
-	q, err := ParseQuery("leverancier")
+	q, err := ParseQuery("leverancier", config.Default().Search.FieldAliases)
 	if err != nil {
 		t.Fatal(err)
 	}

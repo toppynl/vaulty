@@ -59,7 +59,7 @@ func (a *app) runSearch(o searchOpts, args []string) error {
 	}
 
 	raw := strings.Join(args, " ")
-	q, err := search.ParseQuery(raw)
+	q, err := search.ParseQuery(raw, v.Config.Search.FieldAliases)
 	if err != nil {
 		return &ExitError{Code: ExitUsage, Err: fmt.Errorf("search: %w", err)}
 	}

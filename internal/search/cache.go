@@ -89,14 +89,16 @@ func Dir(root string) (string, error) {
 func configHash(v *vault.Vault) string {
 	c := v.Config
 	b, _ := json.Marshal(struct {
-		Root      string   `json:"root"`
-		Dirs      []string `json:"dirs"`
-		Exclude   []string `json:"exclude"`
-		Index     string   `json:"index"`
-		Heading   string   `json:"heading"`
-		Divider   string   `json:"divider"`
-		Analyzers []string `json:"analyzers"`
-	}{v.Root, c.Dirs, c.Exclude, c.Find.Index, c.Timeline.Heading, c.Timeline.Divider, c.Search.Analyzers})
+		Root       string   `json:"root"`
+		Dirs       []string `json:"dirs"`
+		Exclude    []string `json:"exclude"`
+		Index      string   `json:"index"`
+		Heading    string   `json:"heading"`
+		Divider    string   `json:"divider"`
+		Analyzers  []string `json:"analyzers"`
+		FieldType  string   `json:"field_type"`
+		FieldTitle string   `json:"field_title"`
+	}{v.Root, c.Dirs, c.Exclude, c.Find.Index, c.Timeline.Heading, c.Timeline.Divider, c.Search.Analyzers, c.Fields.Type, c.Fields.Title})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }

@@ -110,7 +110,7 @@ func (c *corpus) load(f corpusFile) (*parsedPage, Entry, error) {
 	summary := c.summaries[f.slug()]
 	sum := sha256.Sum256(src)
 	e := Entry{Size: f.size, MtimeNS: f.mtimeNS, SHA256: hex.EncodeToString(sum[:]), Summary: summary}
-	return parsePage(f.rel, src, summary, c.v.Config.Timeline), e, nil
+	return parsePage(f.rel, src, summary, c.v.Config.Timeline, c.v.Config.Fields), e, nil
 }
 
 // buildMemory indexes the whole corpus into an in-memory scorch index (the
@@ -144,6 +144,8 @@ func Run(v *vault.Vault, q *Query, opts Options) (*Response, error) {
 		return nil, err
 	}
 
+	boosts := boostsWithTimeline(v.Config.Search.Boosts)
+
 	resp := &Response{}
 	var idx bleve.Index
 	if opts.NoCache {
@@ -155,7 +157,7 @@ func Run(v *vault.Vault, q *Query, opts Options) (*Response, error) {
 	} else {
 		ci, cerr := openCached(v, corp, im, opts.Rebuild)
 		if cerr == nil {
-			sr, serr := execute(ci.idx, corp, q, opts, analyzers)
+			sr, serr := execute(ci.idx, corp, q, opts, analyzers, boosts)
 			if serr == nil {
 				ci.close()
 				return finish(resp, sr, corp, q, opts, im, analyzers)
@@ -171,14 +173,14 @@ func Run(v *vault.Vault, q *Query, opts Options) (*Response, error) {
 		defer idx.Close()
 	}
 
-	sr, err := execute(idx, corp, q, opts, analyzers)
+	sr, err := execute(idx, corp, q, opts, analyzers, boosts)
 	if err != nil {
 		return nil, err
 	}
 	return finish(resp, sr, corp, q, opts, im, analyzers)
 }
 
-func execute(idx bleve.Index, corp *corpus, q *Query, opts Options, analyzers []string) (res *bleve.SearchResult, err error) {
+func execute(idx bleve.Index, corp *corpus, q *Query, opts Options, analyzers []string, boosts map[string]float64) (res *bleve.SearchResult, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("search panic: %v", r)
@@ -200,14 +202,14 @@ func execute(idx bleve.Index, corp *corpus, q *Query, opts Options, analyzers []
 			ids = []string{}
 		}
 	}
-	bq := q.build(groups, analyzers, ids, len(patterns) > 0, opts.Where)
+	bq := q.build(groups, analyzers, ids, len(patterns) > 0, opts.Where, boosts)
 
 	size := opts.Limit
 	if size <= 0 {
 		size = len(corp.files) + 1
 	}
 	req := bleve.NewSearchRequestOptions(bq, size, 0, false)
-	req.Fields = []string{fieldType, fieldTitle, fieldSummary}
+	req.Fields = []string{fieldType, fieldTitleStored, fieldSummaryStored}
 	req.SortBy([]string{"-_score", "_id"})
 	req.AddFacet(fieldType, bleve.NewFacetRequest(fieldType, len(corp.files)+1))
 	return idx.Search(req)
@@ -252,14 +254,14 @@ func finish(resp *Response, sr *bleve.SearchResult, corp *corpus, q *Query, opts
 		}
 		r := Result{Path: h.ID, Snippets: []Snippet{}}
 		r.Type, _ = h.Fields[fieldType].(string)
-		r.Title, _ = h.Fields[fieldTitle].(string)
-		r.Summary, _ = h.Fields[fieldSummary].(string)
+		r.Title, _ = h.Fields[fieldTitleStored].(string)
+		r.Summary, _ = h.Fields[fieldSummaryStored].(string)
 		if q.Positive() {
 			if top > 0 {
 				r.Score = math.Round(h.Score/top*10000) / 10000
 			}
 			if src, err := os.ReadFile(full); err == nil {
-				pg := parsePage(h.ID, src, r.Summary, corp.v.Config.Timeline)
+				pg := parsePage(h.ID, src, r.Summary, corp.v.Config.Timeline, corp.v.Config.Fields)
 				r.Snippets = hl.snippets(pg, opts.Timeline)
 			}
 		}

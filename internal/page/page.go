@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/toppynl/vaulty/internal/config"
 	"github.com/toppynl/vaulty/internal/doc"
 )
 
@@ -34,7 +35,10 @@ type Frontmatter struct {
 // non-mapping document, or no frontmatter at all yields a zero-value
 // Frontmatter rather than an error — a page with malformed frontmatter must
 // still match on slug/H1/body (DESIGN.md §18.3: "never fails the command").
-func ParseFrontmatter(d *doc.Doc) Frontmatter {
+// fields names the frontmatter keys Type and Title come from
+// (config.Fields, DESIGN.md §4.1); Aliases, Tags and Status keep their
+// fixed, conventional keys.
+func ParseFrontmatter(d *doc.Doc, fields config.Fields) Frontmatter {
 	if !d.HasFM {
 		return Frontmatter{}
 	}
@@ -50,8 +54,8 @@ func ParseFrontmatter(d *doc.Doc) Frontmatter {
 		return ""
 	}
 	return Frontmatter{
-		Type:    first("type"),
-		Title:   first("title"),
+		Type:    first(fields.Type),
+		Title:   first(fields.Title),
 		Status:  first("status"),
 		Aliases: vals["aliases"],
 		Tags:    vals["tags"],

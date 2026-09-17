@@ -25,7 +25,7 @@ func TestParseQueryRejects(t *testing.T) {
 		{`foo !!!`, false},      // one searchable term is enough
 		{`type:note`, false},    // filter-only
 	} {
-		q, err := ParseQuery(tc.query)
+		q, err := ParseQuery(tc.query, map[string]string{"tag": "tags"})
 		if err == nil {
 			err = q.resolve(raw)
 		}

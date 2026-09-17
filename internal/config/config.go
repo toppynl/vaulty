@@ -32,8 +32,21 @@ type Config struct {
 	Timeline    Timeline    `yaml:"timeline" json:"timeline"`
 	Lint        Lint        `yaml:"lint" json:"lint"`
 	Log         Log         `yaml:"log" json:"log"`
+	Fields      Fields      `yaml:"fields" json:"fields"`
 	Find        Find        `yaml:"find" json:"find"`
 	Search      Search      `yaml:"search" json:"search"`
+}
+
+// Fields names the frontmatter keys `find` and `search` read a page's type
+// and title from (DESIGN.md §4.1, §18, §19). Shared between the two
+// commands since both need the same notion of what a page's type/title is
+// (--type filtering, the type facet, the title-display fallback). Every
+// other frontmatter key `find`/`search` care about (aliases, tags, or any
+// vault-specific key) is named directly, per invocation, via `find.fields`
+// (below) rather than through a fixed well-known-key layer like this one.
+type Fields struct {
+	Type  string `yaml:"type" json:"type"`
+	Title string `yaml:"title" json:"title"`
 }
 
 // Search configures `vaulty search` (DESIGN.md §19).
@@ -44,7 +57,30 @@ type Search struct {
 	// queries always exists on top of these. See SearchAnalyzers for the
 	// accepted names.
 	Analyzers []string `yaml:"analyzers" json:"analyzers"`
+
+	// Boosts weights each indexed field group at query time (DESIGN.md
+	// §19.2); a higher boost ranks a match in that field higher. Keys are
+	// the seven content field groups: title, aliases, slug, h1, index,
+	// tags, body. This is a query-time weight only — it never changes what
+	// gets indexed, so changing it alone never forces a cache rebuild. The
+	// Timeline group (searched only with --timeline) is not in this map:
+	// its boost is fixed at 1.0, the same as body's default, since it's
+	// off by default and not part of the ranked-by-default field set this
+	// config knob is about. This map merges onto the default (like
+	// lint.severity, §4.1): a partial override only changes the keys given.
+	Boosts map[string]float64 `yaml:"boosts" json:"boosts"`
+
+	// FieldAliases maps a query-string field name (DESIGN.md §19.1's
+	// `key:value` syntax) onto the frontmatter key it actually filters —
+	// e.g. the default `tag: tags` lets `search tag:billing` filter on the
+	// `tags` frontmatter key. Merges onto the default the same way Boosts
+	// does.
+	FieldAliases map[string]string `yaml:"field_aliases" json:"field_aliases"`
 }
+
+// SearchFieldGroups are the query-time-boostable content field groups
+// (DESIGN.md §19.2) — the valid keys for Search.Boosts.
+var SearchFieldGroups = []string{"title", "aliases", "slug", "h1", "index", "tags", "body"}
 
 // SearchAnalyzers are the analyzer names search.analyzers accepts: bleve's
 // language-neutral "standard" (unicode words, lowercased, English stop
@@ -62,6 +98,46 @@ type Find struct {
 	// summaries from ("- [[name]] — summary" lines, optionally dated). A
 	// missing file is skipped silently.
 	Index string `yaml:"index" json:"index"`
+
+	// Fields lists the scoring sources, in the order ties break (DESIGN.md
+	// §18.2): for one term, the single field with the highest Weight that
+	// matches counts; on a weight tie, the earlier entry in this list wins.
+	// This slice replaces the default wholesale when given, like every
+	// other slice-valued config key (§4.1) — a vault that lists its own
+	// `find.fields` opts fully out of the built-in list, rather than
+	// appending to it.
+	Fields []FindField `yaml:"fields" json:"fields"`
+}
+
+// FindField is one `find.fields` entry (DESIGN.md §18.2).
+type FindField struct {
+	// Source is where the field's value(s) come from: "slug" (the page's
+	// filename without .md), "frontmatter" (Key below), "index" (the
+	// index.md summary, §18.3), "h1" (the first H1 heading text) or "body"
+	// (the compiled-truth text, matched only as a last-resort fallback for
+	// a term no other field matched, and only with `find --body` — same as
+	// today, regardless of this field's configured Weight). "slug" keeps
+	// its exact-match bonus as today: a term whose full token sequence
+	// equals the slug's scores Weight; a mere substring/prefix-window match
+	// (DESIGN.md §18.1) scores Weight/2. Every other source scores the full
+	// Weight on any match, exact or not — this bonus is a fixed property of
+	// "slug", not a separately configurable knob.
+	Source string `yaml:"source" json:"source"`
+	// Key is the frontmatter key to read; required when Source is
+	// "frontmatter", read generically (page.FrontmatterValues: a scalar or
+	// a list of scalars, stringified; nested maps and non-scalar list
+	// elements are skipped). Ignored for every other Source.
+	Key string `yaml:"key" json:"key"`
+	// Weight is this field's score when a term matches it. Must be > 0.
+	Weight int `yaml:"weight" json:"weight"`
+	// Match is "token" (tokenize both the term and the value, matching
+	// DESIGN.md §18.1's contiguous-prefix-window rule — the default for
+	// every built-in field) or "exact" (the whole normalized value must
+	// equal the whole normalized term, no tokenizing at all — for values
+	// like ids that contain "/" or other punctuation tokenizing would
+	// otherwise split on). "exact" normalizes by trimming whitespace and
+	// case-folding; it never tokenizes.
+	Match string `yaml:"match" json:"match"`
 }
 
 // Log configures `vaulty log append|last|lint` (DESIGN.md §17).
@@ -160,8 +236,29 @@ func Default() *Config {
 			Shard:        Shard{TypeDirs: []string{"wiki/*"}},
 		},
 		Log:    Log{Path: "log.md"},
-		Find:   Find{Index: "index.md"},
-		Search: Search{Analyzers: []string{"standard"}},
+		Fields: Fields{Type: "type", Title: "title"},
+		Find: Find{
+			Index: "index.md",
+			Fields: []FindField{
+				{Source: "slug", Weight: 100, Match: "token"},
+				{Source: "frontmatter", Key: "title", Weight: 40, Match: "token"},
+				{Source: "frontmatter", Key: "aliases", Weight: 40, Match: "token"},
+				{Source: "frontmatter", Key: "tags", Weight: 25, Match: "token"},
+				{Source: "index", Weight: 20, Match: "token"},
+				{Source: "h1", Weight: 20, Match: "token"},
+				{Source: "body", Weight: 5, Match: "token"},
+			},
+		},
+		Search: Search{
+			Analyzers: []string{"standard"},
+			Boosts: map[string]float64{
+				"title": 5.0, "aliases": 5.0, "slug": 5.0,
+				"h1": 3.0, "index": 3.0,
+				"tags": 2.0,
+				"body": 1.0,
+			},
+			FieldAliases: map[string]string{"tag": "tags"},
+		},
 	}
 }
 
@@ -216,6 +313,12 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Log.Path) == "" {
 		return errors.New("log.path must not be empty")
 	}
+	if strings.TrimSpace(c.Fields.Type) == "" {
+		return errors.New("fields.type must not be empty")
+	}
+	if strings.TrimSpace(c.Fields.Title) == "" {
+		return errors.New("fields.title must not be empty")
+	}
 	if strings.TrimSpace(c.Find.Index) == "" {
 		return errors.New("find.index must not be empty")
 	}
@@ -224,8 +327,42 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%s: %q must be a relative path inside the vault with no hidden (\".\"-prefixed) directory", key, p)
 		}
 	}
+	if len(c.Find.Fields) == 0 {
+		return errors.New("find.fields must not be empty")
+	}
+	for i, f := range c.Find.Fields {
+		switch f.Source {
+		case "slug", "frontmatter", "index", "h1", "body":
+		default:
+			return fmt.Errorf("find.fields[%d].source %q: want slug, frontmatter, index, h1 or body", i, f.Source)
+		}
+		if f.Source == "frontmatter" && strings.TrimSpace(f.Key) == "" {
+			return fmt.Errorf("find.fields[%d]: key is required when source is frontmatter", i)
+		}
+		if f.Weight <= 0 {
+			return fmt.Errorf("find.fields[%d].weight must be > 0", i)
+		}
+		switch f.Match {
+		case "token", "exact":
+		default:
+			return fmt.Errorf("find.fields[%d].match %q: want token or exact", i, f.Match)
+		}
+	}
 	if len(c.Search.Analyzers) == 0 {
 		return errors.New("search.analyzers must not be empty")
+	}
+	for k, w := range c.Search.Boosts {
+		if !slices.Contains(SearchFieldGroups, k) {
+			return fmt.Errorf("search.boosts: unknown field %q (want one of %s)", k, strings.Join(SearchFieldGroups, ", "))
+		}
+		if w <= 0 {
+			return fmt.Errorf("search.boosts.%s must be > 0", k)
+		}
+	}
+	for k, v := range c.Search.FieldAliases {
+		if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+			return errors.New("search.field_aliases: keys and values must not be empty")
+		}
 	}
 	seenAnalyzer := map[string]bool{}
 	for _, a := range c.Search.Analyzers {

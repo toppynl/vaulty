@@ -28,9 +28,9 @@ type parsedPage struct {
 // parsePage splits a page into its metadata, compiled truth (DESIGN.md
 // §5.2's CompiledTruth span: after frontmatter, above the Timeline divider)
 // and the Timeline remainder (from the divider/heading to EOF).
-func parsePage(rel string, src []byte, summary string, tl config.Timeline) *parsedPage {
+func parsePage(rel string, src []byte, summary string, tl config.Timeline, fields config.Fields) *parsedPage {
 	d := doc.Parse(rel, src)
-	p := &parsedPage{rel: rel, doc: d, fm: page.ParseFrontmatter(d), h1: page.FirstH1(d), summary: summary}
+	p := &parsedPage{rel: rel, doc: d, fm: page.ParseFrontmatter(d, fields), h1: page.FirstH1(d), summary: summary}
 	pg := timeline.Parse(d, tl)
 	ct := pg.CompiledTruth
 	p.truthText = string(src[ct.Start:ct.End])
@@ -51,22 +51,11 @@ func (p *parsedPage) slug() string {
 	return strings.TrimSuffix(path.Base(p.rel), ".md")
 }
 
-// bleveDoc is the indexed document (DESIGN.md §19.2).
+// bleveDoc is the indexed document (DESIGN.md §19.2). Each of the seven
+// content groups is its own field so it can carry its own configurable
+// boost (config.Search.Boosts) — unlike find's config.FindField list, which
+// fields exist here is fixed by the code, not the vault's config.
 func (p *parsedPage) bleveDoc() map[string]any {
-	name := []string{p.slug()}
-	if p.fm.Title != "" {
-		name = append(name, p.fm.Title)
-	}
-	name = append(name, p.fm.Aliases...)
-
-	var head []string
-	if p.h1 != "" {
-		head = append(head, p.h1)
-	}
-	if p.summary != "" {
-		head = append(head, p.summary)
-	}
-
 	// Every frontmatter scalar/list value as one exact "key=value" term.
 	var kv []string
 	for k, vals := range p.fm.Values {
@@ -77,14 +66,17 @@ func (p *parsedPage) bleveDoc() map[string]any {
 	sort.Strings(kv)
 
 	d := map[string]any{
-		groupName:     name,
-		groupHead:     head,
-		groupTags:     p.fm.Tags,
-		groupBody:     p.truthText,
-		groupTimeline: p.timelineText,
-		fieldTitle:    p.fm.Title,
-		fieldSummary:  p.summary,
-		fieldFM:       kv,
+		groupSlug:          p.slug(),
+		groupTitle:         p.fm.Title,
+		groupAliases:       p.fm.Aliases,
+		groupH1:            p.h1,
+		groupIndex:         p.summary,
+		groupTags:          p.fm.Tags,
+		groupBody:          p.truthText,
+		groupTimeline:      p.timelineText,
+		fieldTitleStored:   p.fm.Title,
+		fieldSummaryStored: p.summary,
+		fieldFM:            kv,
 	}
 	if p.fm.Type != "" {
 		d[fieldType] = p.fm.Type

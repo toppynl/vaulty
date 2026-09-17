@@ -40,6 +40,10 @@ lint:
 log:
   path: log.md                  # `vaulty log append|last|lint` target, relative to the root
 
+fields:                         # shared by find and search (DESIGN.md §4.1, §18, §19)
+  type: type                    # frontmatter key holding the page type (--type, facets)
+  title: title                  # frontmatter key holding the page title (title-display fallback)
+
 find:
   index: index.md               # vault-relative path `find` reads index summaries from;
                                  # a missing file is skipped silently
@@ -49,6 +53,21 @@ find:
   # top-level `exclude` above; a vault with a working/archive layer that
   # should default OUT of `find` results entirely would list it there, e.g.
   # exclude: [archive/**, now/tracking/**, now/actions/**]
+  fields:                       # scoring sources (DESIGN.md §18.2), in tie-break order.
+                                 # Replaces this whole list when given — not merged.
+    - { source: slug,        weight: 100, match: token }  # exact slug match keeps a bonus (weight/2 on a mere substring)
+    - { source: frontmatter, key: title,   weight: 40, match: token }
+    - { source: frontmatter, key: aliases, weight: 40, match: token }
+    - { source: frontmatter, key: tags,    weight: 25, match: token }
+    - { source: index,       weight: 20, match: token }
+    - { source: h1,          weight: 20, match: token }
+    - { source: body,        weight: 5,  match: token }   # --body only, last-resort fallback
+  # A vault-specific frontmatter key can be added, e.g. an id matched whole
+  # (no tokenizing, so a "/" in it survives):
+  # fields:
+  #   - { source: slug, weight: 100, match: token }
+  #   - { source: frontmatter, key: id, weight: 60, match: exact }
+  #   - { source: frontmatter, key: title, weight: 40, match: token }
 
 search:
   analyzers: [standard]         # analyzers text is indexed with, one sub-field each (DESIGN.md §19.2);
@@ -56,3 +75,13 @@ search:
                                  # lists language codes instead, e.g. [nl, en] for Dutch + English.
                                  # The index cache lives outside the vault: $VAULTY_CACHE_DIR, else
                                  # the user cache dir (DESIGN.md §19.3).
+  boosts:                       # query-time weight per content field (DESIGN.md §19.2); merges onto
+                                 # these defaults — a partial override only changes the keys it names.
+    title: 5.0
+    aliases: 5.0
+    slug: 5.0
+    h1: 3.0
+    index: 3.0
+    tags: 2.0
+    body: 1.0
+  field_aliases: { tag: tags }  # query-string `key:value` field name -> frontmatter key; merges too
