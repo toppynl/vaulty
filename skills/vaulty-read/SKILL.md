@@ -42,7 +42,7 @@ into grep.
 Pass the path `find`/`search` printed (a bare page name also works):
 
 ```bash
-vaulty timeline read <page> --max-bytes 25000   # compiled truth: the default
+vaulty read <page> --max-bytes 25000   # compiled truth: the default
 ```
 
 - Compiled truth is everything above the page's `## Timeline` section,
@@ -54,14 +54,18 @@ vaulty timeline read <page> --max-bytes 25000   # compiled truth: the default
   are oldest first, so the cap cuts the newest ones.
 - The output ends with a truncation marker: run `--headings`, then
   `--section "<exact heading text>"` for the part you need. Copy the
-  heading text exactly; don't guess.
+  heading text exactly; don't guess. `--section` also prints
+  `vaulty: section hash <hash>` on stderr; that is for editing
+  (vaulty-write skill), ignore it when only reading.
 
 Read the 3–5 most relevant pages, not more. Prefer fewer, better pages.
 
 ## Rules
 
-- Read-only: never run `timeline append`, `log append`, or any `lint`
-  write flag while reading.
+- Read-only: never run `write`, `frontmatter set|add|remove|unset`,
+  `timeline append`, `log append`, or `lint --write-baseline` while
+  reading. `vaulty frontmatter get <page> [key...]` is fine for a few
+  fields without the page body.
 - vaulty only serves vault content: `.md` files under the configured
   `dirs`, outside hidden folders, not excluded. A refusal (`path is not
   vault content`) is deliberate. Don't read that file another way unless

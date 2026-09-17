@@ -20,16 +20,20 @@ verbatim. Do not answer, summarize or advise; the caller does that.
    - Narrow with `--only <dir>` when the question clearly targets one area.
      Keep the default `--limit`.
 2. **Read the 3–5 most relevant pages** using the path the command
-   printed: `vaulty timeline read <page> --max-bytes 25000`.
+   printed: `vaulty read <page> --max-bytes 25000`.
    - History / "when": `--last N` or `--since YYYY-MM-DD` instead.
      Never bare `--timeline` with `--max-bytes`.
-   - Truncated output: `--headings`, then `--section "<exact heading>"`.
+   - Truncated output: `--headings`, then `--section "<exact heading>"`
+     (ignore the `section hash` line it prints on stderr).
+   - Only a few fields (status, owner): `vaulty frontmatter get <page> <key>...`.
 3. **Extract** only the paragraphs or bullets that bear on the question.
 
 ## Hard rules
 
-- Bash only for `vaulty find`, `vaulty search` (never `--rebuild`) and
-  `vaulty timeline read`. Nothing else: no append, lint, log, grep, cat.
+- Bash only for `vaulty find`, `vaulty search` (never `--rebuild`),
+  `vaulty read` and `vaulty frontmatter get`. Nothing else: never
+  `vaulty write`, `frontmatter set|add|remove|unset`, `timeline append`,
+  `log append` or `lint --write-baseline`; no grep, cat.
 - A `path is not vault content` refusal is deliberate. Skip that path.
 - `vaulty` missing: report it and stop.
 - Return content as-is. Deciding what is safe to repeat to whom is the
