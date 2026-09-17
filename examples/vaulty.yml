@@ -49,3 +49,10 @@ find:
   # top-level `exclude` above; a vault with a working/archive layer that
   # should default OUT of `find` results entirely would list it there, e.g.
   # exclude: [archive/**, now/tracking/**, now/actions/**]
+
+search:
+  analyzers: [standard]         # analyzers text is indexed with, one sub-field each (DESIGN.md §19.2);
+                                 # standard = language-neutral, no stemming. A stemmed-language vault
+                                 # lists language codes instead, e.g. [nl, en] for Dutch + English.
+                                 # The index cache lives outside the vault: $VAULTY_CACHE_DIR, else
+                                 # the user cache dir (DESIGN.md §19.3).

@@ -39,6 +39,14 @@ vaulty find <term> [<term>...] [--limit N] [--type TYPE] [--body] [--only DIR|GL
 # ranked vault-relative page paths for term(s) — slug/title/aliases/tags/index/H1
 # (and, with --body, compiled-truth text) — replaces raw grep/find as a discovery step
 # --only (repeatable/comma-separated) restricts to a dir ("wiki") or glob ("wiki/*.md")
+
+vaulty search <query...> [--only DIR|GLOB] [--type T] [--where KEY=VALUE] [--limit N] [--timeline] [--json]
+# BM25-ranked full-text search: pages + up to 2 highlighted `L<n>:` snippet lines each
+# query: words (OR), "exact phrase", term~ (fuzzy), term* (prefix), -term (exclude),
+# key:value / --where key=value (exact frontmatter filter, any key; lists match if they contain it)
+vaulty search <query...> --no-cache     # index in memory for this call, never touch the cache
+vaulty search <query...> --rebuild      # force a full rebuild of the cached index
+vaulty search --stats                   # cache path, pages, index size, last update (DESIGN.md §19.3)
 ```
 
 `<page>` accepts a bare name (`toppy`), a path (`wiki/systems/toppy.md`), or
